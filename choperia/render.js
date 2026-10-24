@@ -5,17 +5,27 @@ const { chromium } = require('playwright');
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const http = require('http');
 
 const args = process.argv.slice(2);
 const stills = args[0] === '--stills';
 if (stills) args.shift();
 const [W = 1920, H = 1080] = args.slice(0, 2).map(Number);
-const url = `file://${path.join(__dirname, 'index.html')}?render=1&w=${W}&h=${H}` +
-  (process.env.NOME ? `&nome=${encodeURIComponent(process.env.NOME)}` : '');
+// servidor estático local (módulos ES não carregam via file://)
+const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.woff2': 'font/woff2', '.m4a': 'audio/mp4' };
+const server = http.createServer((req, res) => {
+  const file = path.join(__dirname, decodeURIComponent(new URL(req.url, 'http://x').pathname));
+  if (!file.startsWith(__dirname) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) { res.writeHead(404); return res.end(); }
+  res.writeHead(200, { 'Content-Type': TYPES[path.extname(file)] || 'application/octet-stream' });
+  fs.createReadStream(file).pipe(res);
+}).listen(0);
+const url = () => `http://127.0.0.1:${server.address().port}/index.html?render=1&w=${W}&h=${H}`;
 
 async function openPage(browser) {
   const page = await browser.newPage({ viewport: { width: W, height: H } });
-  await page.goto(url);
+  page.on('pageerror', e => console.error('erro na página:', e.message));
+  await page.goto(url());
+  await page.waitForFunction(() => window.ready);
   await page.evaluate(() => window.ready);
   return page;
 }
@@ -23,14 +33,14 @@ const frame = (page, t) => page.evaluate(t => window.render(t), t)
   .then(() => page.locator('#c').screenshot({ type: 'png' }));
 
 (async () => {
-  const browser = await chromium.launch({ args: ['--force-color-profile=srgb'] });
+  const browser = await chromium.launch({ args: ['--force-color-profile=srgb', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
   if (stills) {
     const page = await openPage(browser);
     fs.mkdirSync(path.join(__dirname, 'stills'), { recursive: true });
     for (const t of args.slice(2).map(Number)) {
       fs.writeFileSync(path.join(__dirname, 'stills', `t${String(t).padStart(5, '0')}.png`), await frame(page, t));
     }
-    return browser.close();
+    await browser.close(); return server.close();
   }
 
   const fps = Number(args[2] || 30), out = args[3] || 'abertura.mp4';
@@ -54,6 +64,6 @@ const frame = (page, t) => page.evaluate(t => window.render(t), t)
   }
   ff.stdin.end();
   await new Promise(r => ff.on('close', r));
-  await browser.close();
+  await browser.close(); server.close();
   console.log(`\npronto: ${out}`);
 })();

@@ -3,13 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Lá em Casa Chope</title>
+<title>Lá em Casa Chopp</title>
 <link rel="stylesheet" href="fonts.css">
 <style>
-  :root { --bg: #0b0705; --cream: #efe4d0; --brass: #d9b77e; }
+  :root { --bg: #050303; --brass: #d9b77e; }
   html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; }
   body { display: grid; place-items: center; }
   canvas { display: block; max-width: 100vw; max-height: 100vh; }
+  #gl { position: absolute; left: -99999px; }
   #play {
     position: fixed; inset: 0; display: grid; place-items: center; cursor: pointer;
     background: var(--bg); color: var(--brass);
@@ -18,35 +19,31 @@
   #play span { border-top: 1px solid #c8102e; padding-top: 18px; }
   body.render #play { display: none; }
 </style>
+<script type="importmap">{ "imports": { "three": "./vendor/three/three.module.min.js" } }</script>
 </head>
 <body>
 <canvas id="c"></canvas>
+<canvas id="gl"></canvas>
 <div id="play"><span>assistir abertura</span></div>
 <audio id="trilha" src="trilha.m4a" preload="auto"></audio>
-<script>
+<script type="module">
 // ─────────────────────────────────────────────────────────────
-//  Abertura cinemática — Lá em Casa Chope
-//  Tudo é procedural: madeira, chope, espuma, bolhas e brasas.
-//  Parâmetros de URL: ?nome=Lá em Casa&sub=Chope&rotulo=Ashby&tag=MADEIRA · MALTE · MOMENTO&w=1920&h=1080
+//  Abertura cinemática — Lá em Casa Chopp
+//  Cena 3D com renderização física (vidro, chopp, espuma, condensação),
+//  tudo procedural. A tipografia e o acabamento de filme ficam num 2D por cima.
+//  Parâmetros de URL: ?nome=Lá em Casa&sub=Chopp&rotulo=Ashby&w=1920&h=1080
 // ─────────────────────────────────────────────────────────────
+import * as THREE from 'three';
+
 const Q = new URLSearchParams(location.search);
 const NAME = (Q.get('nome') || 'Lá em Casa').toUpperCase();
-const SUB = (Q.get('sub') || 'Chope').toUpperCase();
+const SUB = (Q.get('sub') || 'Chopp').toUpperCase();
 const LABEL = (Q.get('rotulo') || 'Ashby').toUpperCase();
-const TAG = (Q.get('tag') || 'MADEIRA · MALTE · MOMENTO').toUpperCase();
 const W = +Q.get('w') || 1920, H = +Q.get('h') || 1080;
 const DUR = 24;
-const S = Math.min(W, H) / 1080;          // escala de layout
+const S = Math.min(W, H) / 1080;
 const CX = W / 2, CY = H / 2;
-
-const C = {
-  red: '#c8102e', cream: '#efe4d0', brass: '#d9b77e',
-  woodLight: [78, 46, 27], woodDark: [30, 17, 10],
-};
-
-const cv = document.getElementById('c');
-cv.width = W; cv.height = H;
-const ctx = cv.getContext('2d');
+const RED = '#c8102e', CREAM = '#f3e9d8', BRASS = '#d9b77e';
 
 // ── utilidades ──────────────────────────────────────────────
 const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
@@ -55,10 +52,7 @@ const lerp = (a, b, k) => a + (b - a) * k;
 const eOut = k => 1 - Math.pow(1 - k, 3);
 const eIn = k => k * k * k;
 const eIO = k => k < .5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2;
-const sstep = (a, b, x) => { const k = clamp((x - a) / (b - a)); return k * k * (3 - 2 * k); };
-// janela: entra em [a,b], sai em [c,d]
 const win = (t, a, b, c, d) => eOut(seg(t, a, b)) * (1 - eIO(seg(t, c, d)));
-
 function rng(seed) {
   return () => {
     seed |= 0; seed = seed + 0x6D2B79F5 | 0;
@@ -72,415 +66,421 @@ const hash = (x, y) => {
   h = Math.imul(h ^ (h >>> 13), 1274126177);
   return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
 };
-function vnoise(x, y) {
-  const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi;
-  const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
-  const a = hash(xi, yi), b = hash(xi + 1, yi), c = hash(xi, yi + 1), d = hash(xi + 1, yi + 1);
-  return lerp(lerp(a, b, u), lerp(c, d, u), v);
-}
-const fbm = (x, y) => vnoise(x, y) * .55 + vnoise(x * 2.1, y * 2.1) * .28 + vnoise(x * 4.3, y * 4.3) * .17;
 
-function sprite(r, stops) {
-  const c = document.createElement('canvas'); c.width = c.height = r * 2;
-  const g = c.getContext('2d'), gr = g.createRadialGradient(r, r, 0, r, r, r);
-  stops.forEach(([o, col]) => gr.addColorStop(o, col));
-  g.fillStyle = gr; g.fillRect(0, 0, r * 2, r * 2);
-  return c;
-}
+// ── renderizador ────────────────────────────────────────────
+const glCanvas = document.getElementById('gl');
+const renderer = new THREE.WebGLRenderer({ canvas: glCanvas, antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(W, H, false);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
 
-// ── madeira procedural (gerada uma vez) ─────────────────────
-const WOOD_PAD = 1.14;
-const wood = (() => {
-  const ww = Math.ceil(W * WOOD_PAD), wh = Math.ceil(H * WOOD_PAD);
-  const c = document.createElement('canvas'); c.width = ww; c.height = wh;
-  const g = c.getContext('2d'), img = g.createImageData(ww, wh), d = img.data;
-  const ph = 230 * S, k = 1 / S, R = rng(7);
-  const planks = Array.from({ length: Math.ceil(wh / ph) + 1 }, () => ({
-    tone: .82 + R() * .3, joint: R() * ww * 1.4 + ww * .15, off: R() * 100, fq: .085 + R() * .07, amp: 50 + R() * 60,
-  }));
-  for (let y = 0; y < wh; y++) {
-    const pi = Math.floor(y / ph), p = planks[pi], v = y - pi * ph, yk = y * k;
-    for (let x = 0; x < ww; x++) {
-      const xk = x * k;
-      const warp = fbm(xk * .0009 + p.off, yk * .004 + p.off) * p.amp + fbm(xk * .004, yk * .02 + p.off) * 14
-        + fbm(xk * .02, yk * .05) * 3;
-      let ring = .5 + .5 * Math.sin((yk + warp) * p.fq * (.8 + .4 * vnoise(xk * .001, p.off)));
-      ring = Math.pow(ring, 2.2);
-      const fiber = vnoise(xk * .012 + p.off, yk * .85);
-      const pore = Math.max(0, vnoise(xk * .03, yk * 2.2 + p.off) - .72) * 2.4;
-      let m = clamp(ring * .55 + fiber * .28 + pore + (fbm(xk * .0015, yk * .008 + p.off) - .5) * .6);
-      let br = p.tone * (.9 + .2 * vnoise(xk * .0008, yk * .002 + p.off));
-      if (v < 2.2 * S) br *= .28;                       // junta entre tábuas
-      else if (v < 4.5 * S) br *= 1.12;                 // chanfro iluminado
-      if (Math.abs(x - p.joint) < 1.4 * S) br *= .5;   // emenda de topo
-      const i = (y * ww + x) * 4;
-      d[i]     = lerp(C.woodLight[0], C.woodDark[0], m) * br;
-      d[i + 1] = lerp(C.woodLight[1], C.woodDark[1], m) * br;
-      d[i + 2] = lerp(C.woodLight[2], C.woodDark[2], m) * br;
-      d[i + 3] = 255;
-    }
-  }
-  g.putImageData(img, 0, 0);
-  return c;
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(28, W / H, .01, 20);
+
+// ── ambiente de estúdio: duas réguas de luz laterais, um teto suave
+//    e um brilho vermelho (a cor da casa) atrás da caneca ──────
+scene.environment = (() => {
+  const env = new THREE.Scene();
+  env.add(new THREE.Mesh(new THREE.BoxGeometry(10, 10, 10), new THREE.MeshBasicMaterial({ color: 0x030202, side: THREE.BackSide })));
+  const panel = (w, h, hex, k, pos) => {
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h),
+      new THREE.MeshBasicMaterial({ color: new THREE.Color(hex).multiplyScalar(k), side: THREE.DoubleSide }));
+    m.position.set(...pos); m.lookAt(0, 0, 0); env.add(m);
+  };
+  panel(.5, 4.5, '#fff1e0', 6, [-3.2, .6, 1.2]);
+  panel(.4, 4.5, '#fff1e0', 4, [3.2, .6, 1.6]);
+  panel(3.5, 1.2, '#ffffff', 1.2, [0, 4.5, .5]);
+  panel(1.6, 2.4, '#ff2a14', .9, [0, .4, -4.5]);
+  panel(.8, .8, '#ffb15a', 1.6, [-.8, .2, -4.4]);
+  const pm = new THREE.PMREMGenerator(renderer);
+  return pm.fromScene(env, .015).texture;
 })();
 
-// ── grão de filme ───────────────────────────────────────────
+// ── fundo: penumbra com halo vermelho-âmbar atrás da caneca ──
+const bgMat = new THREE.ShaderMaterial({
+  uniforms: { uGlow: { value: 0 }, uWarm: { value: 0 } },
+  depthWrite: false,
+  vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.); }`,
+  fragmentShader: `
+    varying vec2 vUv; uniform float uGlow; uniform float uWarm;
+    void main(){
+      vec2 p = (vUv - vec2(.5,.42)) * vec2(1.6,1.);
+      float d = length(p);
+      vec3 red = vec3(.2,.008,.006), amber = vec3(.5,.2,.03);
+      vec3 col = red * exp(-d*d*14.) * .55 + amber * exp(-d*d*60.) * uWarm * .35;
+      col *= uGlow;
+      gl_FragColor = vec4(col, 1.);
+      #include <tonemapping_fragment>
+      #include <colorspace_fragment>
+    }`,
+});
+const bg = new THREE.Mesh(new THREE.PlaneGeometry(4, 2.6), bgMat);
+bg.scale.set(1.6, 1.6, 1); bg.position.set(0, .3, -2.2);
+scene.add(bg);
+
+// ── bancada: pedra preta polida ─────────────────────────────
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(6, 6),
+  new THREE.MeshPhysicalMaterial({ color: 0x030202, roughness: .55, clearcoat: .5, clearcoatRoughness: .12, transparent: true, opacity: .88, envMapIntensity: .35 }));
+floor.rotation.x = -Math.PI / 2;
+scene.add(floor);
+scene.fog = new THREE.Fog(0x000000, .7, 1.7);
+
+function radialTex(stops, size = 256) {
+  const c = document.createElement('canvas'); c.width = c.height = size;
+  const g = c.getContext('2d'), gr = g.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  stops.forEach(([o, col]) => gr.addColorStop(o, col));
+  g.fillStyle = gr; g.fillRect(0, 0, size, size);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+// sombra de contato
+const contact = new THREE.Mesh(new THREE.PlaneGeometry(.2, .2), new THREE.MeshBasicMaterial({
+  map: radialTex([[0, 'rgba(0,0,0,.95)'], [.35, 'rgba(0,0,0,.6)'], [1, 'rgba(0,0,0,0)']]), transparent: true, depthWrite: false,
+}));
+contact.rotation.x = -Math.PI / 2; contact.position.y = .0004; scene.add(contact);
+// cáustica: a luz atravessa o chopp e pinta a bancada de âmbar
+const caustic = new THREE.Mesh(new THREE.PlaneGeometry(.22, .14), new THREE.MeshBasicMaterial({
+  map: radialTex([[0, 'rgba(255,190,80,1)'], [.3, 'rgba(255,140,30,.55)'], [1, 'rgba(255,120,20,0)']]),
+  transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0,
+}));
+caustic.rotation.x = -Math.PI / 2; caustic.rotation.z = -.5; caustic.position.set(.06, .0006, .085); scene.add(caustic);
+
+// ── luzes ───────────────────────────────────────────────────
+const key = new THREE.SpotLight(0xfff0dc, 0, 4, .5, .8, 1.2);
+key.position.set(-.7, .9, .8); key.target.position.set(0, .07, 0);
+scene.add(key, key.target);
+const rim = new THREE.SpotLight(0xff8a50, 0, 4, .6, .9, 1.2);
+rim.position.set(.6, .5, -.7); rim.target.position.set(0, .08, 0);
+scene.add(rim, rim.target);
+
+// ── a caneca ────────────────────────────────────────────────
+const R_IN = .039, H_MUG = .152, BASE = .017;
+const rOut = y => .0445 + .0018 * (y / H_MUG);
+const mug = new THREE.Group(); scene.add(mug);
+
+const glassMat = new THREE.MeshPhysicalMaterial({
+  color: 0xffffff, metalness: 0, roughness: .025, transmission: 1, thickness: .012, ior: 1.5,
+  specularIntensity: 1, envMapIntensity: 1.25, side: THREE.DoubleSide,
+  attenuationColor: new THREE.Color('#e9f3ec'), attenuationDistance: .4,
+});
+{
+  const P = [], arc = (cx, cy, r, a0, a1, n = 6) => { for (let i = 0; i <= n; i++) { const a = lerp(a0, a1, i / n); P.push(new THREE.Vector2(cx + Math.cos(a) * r, cy + Math.sin(a) * r)); } };
+  P.push(new THREE.Vector2(0, 0));
+  arc(rOut(0) - .005, .005, .005, -Math.PI / 2, 0);
+  P.push(new THREE.Vector2(rOut(H_MUG - .003), H_MUG - .003));
+  arc((rOut(H_MUG) + R_IN) / 2, H_MUG - .003, (rOut(H_MUG) - R_IN) / 2, 0, Math.PI, 8);
+  P.push(new THREE.Vector2(R_IN, BASE + .004));
+  arc(R_IN - .004, BASE + .004, .004, 0, -Math.PI / 2);
+  P.push(new THREE.Vector2(0, BASE));
+  mug.add(new THREE.Mesh(new THREE.LatheGeometry(P, 160), glassMat));
+  // alça
+  const curve = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(rOut(.125) - .003, .126, 0), new THREE.Vector3(.068, .13, 0), new THREE.Vector3(.087, .112, 0),
+    new THREE.Vector3(.09, .075, 0), new THREE.Vector3(.085, .045, 0), new THREE.Vector3(.066, .03, 0),
+    new THREE.Vector3(rOut(.03) - .003, .03, 0),
+  ]);
+  mug.add(new THREE.Mesh(new THREE.TubeGeometry(curve, 96, .0078, 28, false), glassMat));
+}
+
+// chopp: luz atravessando o líquido, mais intensa no centro, borbulhas subindo junto ao vidro
+const beerVert = `
+  varying vec3 vN; varying vec3 vV; varying vec3 vL; varying vec3 vW;
+  void main(){
+    vec4 wp = modelMatrix * vec4(position,1.);
+    vW = wp.xyz; vL = position;
+    vN = normalize(mat3(modelMatrix) * normal);
+    vV = normalize(cameraPosition - wp.xyz);
+    gl_Position = projectionMatrix * viewMatrix * wp;
+  }`;
+const beerFrag = `
+  uniform float uTime; uniform float uGlow; uniform float uBubbles; uniform float uLevel;
+  varying vec3 vN; varying vec3 vV; varying vec3 vL; varying vec3 vW;
+  float h1(float n){ return fract(sin(n*127.1)*43758.5453); }
+  void main(){
+    float f = clamp(abs(dot(normalize(vN), normalize(vV))), 0., 1.);
+    vec3 deep = vec3(.11,.02,.002), gold = vec3(.62,.21,.018), hot = vec3(.98,.52,.12);
+    vec3 col = mix(deep, gold, pow(f, 1.6));
+    col = mix(col, hot, pow(f, 9.) * .45);
+    float hy = abs(vW.y);
+    col *= mix(.55, 1.12, clamp((hy - .02) / max(uLevel, .02), 0., 1.));
+    // borbulhas: colunas finas subindo pela parede
+    if (abs(vN.y) < .5) {
+      float ang = atan(vL.z, vL.x);
+      float px = ang * .039, py = hy;
+      float cw = .0022, ci = floor(px / cw), r0 = h1(ci);
+      float on = step(.62, r0);
+      float sp = .004 + .005 * h1(ci + 3.1);
+      float yy = py - uTime * (.025 + .035 * h1(ci + 7.3));
+      float cell = floor(yy / sp);
+      vec2 c = vec2((ci + .5) * cw + (h1(cell + ci * 3.7) - .5) * cw * .45, (cell + .5) * sp);
+      float r = .00016 + .00022 * h1(cell * 1.7 + ci);
+      float d = length(vec2(px - c.x, yy - c.y));
+      float ring = smoothstep(r, r * .55, d) - .65 * smoothstep(r * .55, r * .15, d);
+      col += ring * on * uBubbles * vec3(1., .85, .55) * 1.1;
+      // poeira fina de gás em suspensão
+      float sx = floor(px / .0007), sy = floor((py - uTime * .02) / .0007);
+      col += step(.996, h1(sx * 91.7 + sy * 17.3)) * uBubbles * vec3(1., .8, .45) * .35;
+    }
+    gl_FragColor = vec4(col * uGlow, 1.);
+    #include <tonemapping_fragment>
+    #include <colorspace_fragment>
+  }`;
+const beerMat = new THREE.ShaderMaterial({
+  uniforms: { uTime: { value: 0 }, uGlow: { value: 1 }, uBubbles: { value: 0 }, uLevel: { value: .1 } },
+  vertexShader: beerVert, fragmentShader: beerFrag, side: THREE.DoubleSide,
+});
+const beerGeo = new THREE.CylinderGeometry(R_IN - .0012, R_IN - .0012, 1, 128, 1);
+beerGeo.translate(0, .5, 0);
+const beer = new THREE.Mesh(beerGeo, beerMat);
+mug.add(beer);
+
+// espuma: colarinho cremoso, topo levemente abaulado e irregular
+const foamTex = (() => {
+  const n = 512, c = document.createElement('canvas'); c.width = c.height = n;
+  const g = c.getContext('2d'); g.fillStyle = '#808080'; g.fillRect(0, 0, n, n);
+  const R = rng(9);
+  for (let i = 0; i < 2600; i++) {
+    const x = R() * n, y = R() * n, r = 1 + Math.pow(R(), 3) * 9;
+    const gr = g.createRadialGradient(x, y, 0, x, y, r);
+    gr.addColorStop(0, 'rgba(255,255,255,.9)'); gr.addColorStop(.7, 'rgba(200,200,200,.4)'); gr.addColorStop(1, 'rgba(40,40,40,.6)');
+    g.fillStyle = gr; g.beginPath(); g.arc(x, y, r, 0, 6.283); g.fill();
+  }
+  const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(5, 1.5); return t;
+})();
+const foamMat = new THREE.MeshStandardMaterial({
+  color: 0xf4ead6, roughness: .88, metalness: 0, bumpMap: foamTex, bumpScale: 1.2,
+  emissive: new THREE.Color('#a8865a'), emissiveIntensity: .45, side: THREE.DoubleSide,
+});
+const foamGeo = (() => {
+  const P = [], rf = R_IN - .0008;
+  P.push(new THREE.Vector2(0, 0), new THREE.Vector2(rf, 0), new THREE.Vector2(rf, .82));
+  for (let i = 1; i <= 10; i++) { const a = i / 10 * Math.PI / 2; P.push(new THREE.Vector2(rf * Math.cos(a), .82 + .24 * Math.sin(a))); }
+  const g = new THREE.LatheGeometry(P, 128);
+  const pos = g.attributes.position, v = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+    if (v.y > .8) {
+      const n = Math.sin(v.x * 900) * Math.cos(v.z * 820) * .5 + Math.sin(v.x * 2300 + v.z * 1900) * .25;
+      pos.setY(i, v.y + n * .05);
+    }
+  }
+  g.computeVertexNormals();
+  return g;
+})();
+const foam = new THREE.Mesh(foamGeo, foamMat);
+mug.add(foam);
+
+// filete de chopp caindo da torneira
+const pourMat = new THREE.ShaderMaterial({
+  uniforms: { uTime: { value: 0 }, uGlow: { value: 1.3 }, uBubbles: { value: 0 }, uLevel: { value: 1 } },
+  vertexShader: `
+    uniform float uTime; varying vec3 vN; varying vec3 vV; varying vec3 vL; varying vec3 vW;
+    void main(){
+      vec3 p = position;
+      p.x += sin(p.y * 90. + uTime * 23.) * .0006 + sin(p.y * 31. - uTime * 9.) * .0004;
+      p.z += cos(p.y * 70. + uTime * 17.) * .0005;
+      vec4 wp = modelMatrix * vec4(p,1.);
+      vW = wp.xyz; vL = p; vN = normalize(mat3(modelMatrix) * normal);
+      vV = normalize(cameraPosition - wp.xyz);
+      gl_Position = projectionMatrix * viewMatrix * wp;
+    }`,
+  fragmentShader: beerFrag,
+});
+const pourGeo = new THREE.CylinderGeometry(.0034, .0042, 1, 32, 60, true);
+pourGeo.translate(0, .5, 0);
+const pour = new THREE.Mesh(pourGeo, pourMat);
+pour.position.x = -.011; scene.add(pour);
+
+// condensação: gotas que se formam no vidro gelado
+const dropData = (() => {
+  const R = rng(31), out = [];
+  for (let i = 0; i < 900; i++) {
+    const y = .02 + Math.pow(R(), .8) * .11, a = R() * Math.PI * 2 - Math.PI, r = .0003 + Math.pow(R(), 3) * .0011, t0 = R();
+    const onLabel = Math.abs(a) < .85 && Math.abs(y - .072) < .027;
+    if (Math.abs(a - Math.PI / 2) > .2 && !onLabel) out.push({ y, a, r, t0 }); // livre na alça e no rótulo
+  }
+  return out;
+})();
+const drops = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 14, 10),
+  new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness: .02, transmission: 1, thickness: .002, ior: 1.33, envMapIntensity: 1.6 }),
+  dropData.length);
+mug.add(drops);
+const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), sc = new THREE.Vector3(), ps = new THREE.Vector3(), UP = new THREE.Vector3(0, 1, 0);
+function updateDrops(k) {
+  dropData.forEach((d, i) => {
+    const g = clamp((k - d.t0 * .6) / .4);
+    const r = d.r * eOut(g) + 1e-6, ro = rOut(d.y) + r * .15;
+    ps.set(Math.sin(d.a) * ro, d.y, Math.cos(d.a) * ro);
+    q.setFromAxisAngle(UP, d.a);
+    sc.set(r, r * 1.2, r * .3);
+    drops.setMatrixAt(i, m4.compose(ps, q, sc));
+  });
+  drops.instanceMatrix.needsUpdate = true;
+}
+// névoa de vidro gelado
+const frost = new THREE.Mesh(new THREE.CylinderGeometry(rOut(.15) + .0003, rOut(0) + .0003, .13, 128, 1, true),
+  new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1, transparent: true, opacity: 0, depthWrite: false,
+    alphaMap: (() => { const t = foamTex.clone(); t.repeat.set(3, 2); t.needsUpdate = true; return t; })() }));
+frost.position.y = .081; mug.add(frost);
+
+// rótulo Ashby, aplicado no vidro
+const labelCanvas = document.createElement('canvas'); labelCanvas.width = 1024; labelCanvas.height = 720;
+const labelTex = new THREE.CanvasTexture(labelCanvas);
+labelTex.colorSpace = THREE.SRGBColorSpace; labelTex.anisotropy = 8;
+function paintLabel() {
+  const w = labelCanvas.width, h = labelCanvas.height, g = labelCanvas.getContext('2d');
+  const ex = w / 2, ey = h / 2, rx = w * .46, ry = h * .44;
+  g.clearRect(0, 0, w, h);
+  const gr = g.createLinearGradient(0, 0, w, 0);
+  gr.addColorStop(0, '#4a0912'); gr.addColorStop(.4, '#7d1121'); gr.addColorStop(.6, '#7d1121'); gr.addColorStop(1, '#4a0912');
+  g.fillStyle = gr; g.beginPath(); g.ellipse(ex, ey, rx, ry, 0, 0, 6.283); g.fill();
+  g.strokeStyle = BRASS; g.lineWidth = 9; g.beginPath(); g.ellipse(ex, ey, rx - 6, ry - 6, 0, 0, 6.283); g.stroke();
+  g.lineWidth = 3; g.globalAlpha = .7; g.beginPath(); g.ellipse(ex, ey, rx - 30, ry - 30, 0, 0, 6.283); g.stroke(); g.globalAlpha = 1;
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillStyle = BRASS; g.font = `400 46px 'Jost'`; g.letterSpacing = '18px'; g.fillText('CERVEJA', ex + 9, ey - 150);
+  g.fillStyle = CREAM; g.font = `500 200px 'Cormorant Garamond'`; g.letterSpacing = '20px'; g.fillText(LABEL, ex + 10, ey + 14);
+  g.fillStyle = BRASS; g.fillRect(ex - 110, ey + 140, 220, 4);
+  labelTex.needsUpdate = true;
+}
+const LBL_W = .066, LBL_H = .046, LBL_Y = .072;
+const label = new THREE.Mesh(
+  new THREE.CylinderGeometry(rOut(LBL_Y + LBL_H / 2) + .0004, rOut(LBL_Y - LBL_H / 2) + .0004, LBL_H, 64, 1, true,
+    -LBL_W / rOut(LBL_Y) / 2, LBL_W / rOut(LBL_Y)),
+  new THREE.MeshPhysicalMaterial({ map: labelTex, transparent: true, roughness: .35, clearcoat: 1, clearcoatRoughness: .1, alphaTest: .02 }));
+label.position.y = LBL_Y; mug.add(label);
+
+// reflexo na bancada (só o que brilha: chopp e espuma)
+const mirror = new THREE.Group();
+mirror.scale.y = -1; scene.add(mirror);
+const beerR = new THREE.Mesh(beerGeo, beerMat), foamR = new THREE.Mesh(foamGeo, foamMat);
+mirror.add(beerR, foamR);
+
+// ── estado da cena por instante ─────────────────────────────
+const FULL = .78 * (H_MUG - BASE), FOAM_MAX = .2 * (H_MUG - BASE);
+function setLiquid(t) {
+  const fill = eOut(seg(t, 5.8, 11.4));
+  const level = Math.max(.0004, fill * FULL);
+  const fh = Math.max(.0004, eOut(seg(t, 7.2, 12.2)) * FOAM_MAX * (1 - .12 * seg(t, 12.2, 20)));
+  const show = fill > .002;
+  for (const [b, f] of [[beer, foam], [beerR, foamR]]) {
+    b.visible = f.visible = show;
+    b.scale.y = level; b.position.y = BASE;
+    f.position.y = BASE + level - .0006;
+    f.scale.set(1, fh / 1.06, 1);
+  }
+  beerMat.uniforms.uTime.value = t;
+  beerMat.uniforms.uLevel.value = level + BASE;
+  beerMat.uniforms.uBubbles.value = seg(t, 6.5, 8);
+  beerMat.uniforms.uGlow.value = .85 + .2 * seg(t, 8, 12);
+
+  // filete
+  const on = seg(t, 5.6, 5.95), off = eIn(seg(t, 11.0, 11.6));
+  const surf = BASE + level + fh * .6;
+  const top = lerp(.75, surf, off), bot = lerp(.75, surf, on);
+  pour.visible = on > 0 && off < 1 && top - bot > .001;
+  pour.position.y = bot; pour.scale.y = Math.max(.001, top - bot);
+  pourMat.uniforms.uTime.value = t;
+
+  // gelo: condensação e névoa
+  const cold = seg(t, 9.5, 15);
+  updateDrops(cold);
+  frost.material.opacity = cold * .09;
+  glassMat.roughness = .025 + cold * .02;
+  caustic.material.opacity = fill * .4;
+  mirror.visible = show;
+}
+
+// ── câmera: trilho em Catmull-Rom ───────────────────────────
+// [tempo, distância, azimute, altura da câmera, altura do alvo, fov]
+const KEYS = [
+  [0.0, .20, -.75, .158, .135, 26],
+  [2.6, .30, -.55, .13, .11, 27],
+  [5.6, .52, -.30, .135, .12, 28],
+  [11.4, .47, .02, .10, .09, 28],
+  [14.6, .27, .04, .08, .075, 28],
+  [16.0, .17, .55, .055, .06, 30],
+  [18.2, .19, .75, .06, .065, 30],
+  [20.0, .66, .20, .15, .16, 28],
+  [24.0, .70, .26, .155, .165, 28],
+];
+function cr(p0, p1, p2, p3, u) {
+  const u2 = u * u, u3 = u2 * u;
+  return .5 * (2 * p1 + (-p0 + p2) * u + (2 * p0 - 5 * p1 + 4 * p2 - p3) * u2 + (-p0 + 3 * p1 - 3 * p2 + p3) * u3);
+}
+function camAt(t) {
+  let i = 0; while (i < KEYS.length - 2 && t > KEYS[i + 1][0]) i++;
+  const k0 = KEYS[Math.max(0, i - 1)], k1 = KEYS[i], k2 = KEYS[i + 1], k3 = KEYS[Math.min(KEYS.length - 1, i + 2)];
+  const u = clamp((t - k1[0]) / (k2[0] - k1[0]));
+  const [d, az, cy, ty, fov] = [1, 2, 3, 4, 5].map(j => cr(k0[j], k1[j], k2[j], k3[j], u));
+  camera.position.set(Math.sin(az) * d, cy, Math.cos(az) * d);
+  camera.lookAt(0, ty, 0);
+  camera.fov = W / H < 1 ? fov * 1.75 : fov;
+  camera.updateProjectionMatrix();
+}
+
+// ── 2D por cima: tipografia, grão e vinheta ─────────────────
+const cv = document.getElementById('c'); cv.width = W; cv.height = H;
+const ctx = cv.getContext('2d');
 const grain = (() => {
   const n = 256, c = document.createElement('canvas'); c.width = c.height = n;
   const g = c.getContext('2d'), img = g.createImageData(n, n), R = rng(3);
-  for (let i = 0; i < n * n * 4; i += 4) {
-    const v = R() * 255; img.data[i] = img.data[i + 1] = img.data[i + 2] = v; img.data[i + 3] = 255;
-  }
-  g.putImageData(img, 0, 0);
-  return ctx.createPattern(c, 'repeat');
+  for (let i = 0; i < n * n * 4; i += 4) { const v = R() * 255; img.data[i] = img.data[i + 1] = img.data[i + 2] = v; img.data[i + 3] = 255; }
+  g.putImageData(img, 0, 0); return ctx.createPattern(c, 'repeat');
 })();
 
-// ── partículas ──────────────────────────────────────────────
-const SP_DUST = sprite(32, [[0, 'rgba(255,226,180,1)'], [.25, 'rgba(255,210,150,.5)'], [1, 'rgba(255,200,140,0)']]);
-const SP_EMBER = sprite(32, [[0, 'rgba(255,236,200,1)'], [.18, 'rgba(255,120,60,.9)'], [.5, 'rgba(200,16,46,.35)'], [1, 'rgba(200,16,46,0)']]);
-const SP_BOKEH = (() => {
-  const r = 128, c = document.createElement('canvas'); c.width = c.height = r * 2;
-  const g = c.getContext('2d');
-  const gr = g.createRadialGradient(r, r, 0, r, r, r);
-  gr.addColorStop(0, 'rgba(255,196,130,.16)'); gr.addColorStop(.8, 'rgba(255,196,130,.24)');
-  gr.addColorStop(.92, 'rgba(255,222,180,.5)'); gr.addColorStop(1, 'rgba(255,222,180,0)');
-  g.fillStyle = gr; g.fillRect(0, 0, r * 2, r * 2);
-  return c;
-})();
-
-const R1 = rng(11);
-const dust = Array.from({ length: 160 }, () => ({
-  x: R1() * W, y: R1() * H, z: .3 + R1() * .7, ph: R1() * 6.28, sp: .3 + R1(),
-}));
-const embers = Array.from({ length: 34 }, () => ({
-  x: CX + (R1() - .5) * W * .8, y0: R1(), z: .4 + R1() * .6, ph: R1() * 6.28, sp: .025 + R1() * .045,
-}));
-const bokeh = Array.from({ length: 95 }, () => ({
-  x: R1(), y0: R1(), z: R1(), ph: R1() * 6.28,
-}));
-
-// ── caneca de chope ─────────────────────────────────────────
-const G = 520 * S;                       // altura da caneca
-const GX = CX - 34 * S, GY = CY - 40 * S; // centro do corpo (alça compensa à direita)
-const G_TOP = GY - G / 2, G_BOT = GY + G / 2;
-const BASE = .1 * G;                     // fundo de vidro espesso
-const IN_BOT = G_BOT - BASE, IN_H = IN_BOT - G_TOP;
-const rIn = u => (0.25 + 0.02 * u) * G;  // corpo reto, levemente aberto em cima
-const yAt = u => IN_BOT - u * IN_H;
-const WALL = 10 * S;
-
-const outline = (() => {
-  const pts = [], N = 60, cr = 16 * S;
-  for (let i = N; i >= 0; i--) { const u = i / N; pts.push([GX - rIn(u) - WALL, yAt(u)]); }
-  const rb = rIn(0) + WALL;
-  for (let i = 0; i <= 8; i++) { const a = Math.PI - i / 8 * Math.PI / 2; pts.push([GX - rb + cr + Math.cos(a) * cr, G_BOT - cr + Math.sin(a) * cr]); }
-  for (let i = 0; i <= 8; i++) { const a = Math.PI / 2 - i / 8 * Math.PI / 2; pts.push([GX + rb - cr + Math.cos(a) * cr, G_BOT - cr + Math.sin(a) * cr]); }
-  for (let i = 0; i <= N; i++) { const u = i / N; pts.push([GX + rIn(u) + WALL, yAt(u)]); }
-  let len = 0;
-  for (let i = 1; i < pts.length; i++) len += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
-  return { pts, len };
-})();
-
-function interiorPath(c) {
-  c.beginPath();
-  for (let i = 0; i <= 60; i++) { const u = i / 60; c.lineTo(GX - rIn(u), yAt(u)); }
-  for (let i = 60; i >= 0; i--) { const u = i / 60; c.lineTo(GX + rIn(u), yAt(u)); }
-  c.closePath();
-}
-
-const R2 = rng(23);
-const glassBubbles = Array.from({ length: 90 }, () => ({
-  x: R2() * 2 - 1, ph: R2(), sp: .05 + R2() * .12, r: (1 + R2() * 2.4) * S, wob: R2() * 6.28,
-}));
-
-// ── texto ───────────────────────────────────────────────────
 function spaced(text, x, y, font, spacing, color, alpha = 1, perLetter, c = ctx) {
-  c.save();
-  c.font = font; c.fillStyle = color; c.textBaseline = 'middle';
-  const ws = [...text].map(ch => c.measureText(ch).width);
+  c.save(); c.font = font; c.fillStyle = color; c.textBaseline = 'middle';
+  const chars = [...text], ws = chars.map(ch => c.measureText(ch).width);
   const total = ws.reduce((a, b) => a + b, 0) + spacing * (ws.length - 1);
   let px = x - total / 2;
-  [...text].forEach((ch, i) => {
-    const pl = perLetter ? perLetter(i, ws.length) : { a: 1, dy: 0 };
-    c.globalAlpha = alpha * pl.a;
-    c.fillText(ch, px, y + (pl.dy || 0));
-    px += ws[i] + spacing;
+  chars.forEach((ch, i) => {
+    const pl = perLetter ? perLetter(i, chars.length) : { a: 1, dy: 0 };
+    c.globalAlpha = alpha * pl.a; c.fillText(ch, px, y + (pl.dy || 0)); px += ws[i] + spacing;
   });
-  c.restore();
-  return total;
+  c.restore(); return total;
 }
-
-// palavra-capítulo editorial: numeral + palavra em itálico
-function chapter(t, a, b, numeral, word, y, color = C.cream) {
-  const k = win(t, a, a + 1.1, b - .7, b);
-  if (k <= 0) return;
-  const reveal = eOut(seg(t, a, a + 1.6));
-  ctx.save();
-  ctx.filter = `blur(${(1 - reveal) * 10 * S}px)`;
-  spaced(word, CX, y - (1 - reveal) * 10 * S, `italic 300 ${104 * S}px 'Cormorant Garamond'`,
-    lerp(26, 4, reveal) * S, color, k);
-  ctx.filter = 'none';
-  spaced(numeral, CX, y - 92 * S, `400 ${18 * S}px 'Jost'`, 7 * S, C.brass, k);
-  ctx.restore();
-}
-
-// ── luz ─────────────────────────────────────────────────────
-function lightPool(x, y, r, dark) {
-  const g = ctx.createRadialGradient(x, y, 0, x, y, r);
-  g.addColorStop(0, 'rgba(6,3,2,0)'); g.addColorStop(.55, `rgba(6,3,2,${dark * .55})`); g.addColorStop(1, `rgba(6,3,2,${dark})`);
-  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
-}
-function warmGlow(x, y, r, a) {
-  ctx.save(); ctx.globalCompositeOperation = 'soft-light';
-  const g = ctx.createRadialGradient(x, y, 0, x, y, r);
-  g.addColorStop(0, `rgba(255,190,110,${a})`); g.addColorStop(1, 'rgba(255,190,110,0)');
-  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H); ctx.restore();
-}
-function drawWood(t, zoom = 1, ox = 0) {
-  const ww = wood.width * zoom, wh = wood.height * zoom;
-  ctx.drawImage(wood, CX - ww / 2 + ox, CY - wh / 2, ww, wh);
-}
-
-// ── atos ────────────────────────────────────────────────────
-function drawDust(t, alpha, beam) {
-  ctx.save(); ctx.globalCompositeOperation = 'lighter';
-  for (const p of dust) {
-    const x = (p.x + t * 9 * p.sp * S + Math.sin(t * .4 * p.sp + p.ph) * 30 * S) % W;
-    const y = (p.y - t * 6 * p.sp * S + H * 4) % H;
-    // feixe de luz diagonal vindo do alto à esquerda
-    const d = beam ? Math.abs((x - W * .32) * .6 - (y) * .35 + H * .05) / (W * .22) : 0;
-    const inBeam = beam ? Math.exp(-d * d * 2.2) : 1;
-    const tw = .55 + .45 * Math.sin(t * 1.3 * p.sp + p.ph);
-    const a = alpha * inBeam * tw * p.z;
-    if (a < .01) continue;
-    const r = (1.2 + p.z * 3.2) * S * 4;
-    ctx.globalAlpha = a; ctx.drawImage(SP_DUST, x - r, y - r, r * 2, r * 2);
-  }
-  ctx.restore();
-}
-
-function drawBeam(alpha) {
-  if (alpha <= 0) return;
-  ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = alpha;
-  ctx.translate(W * .3, -H * .1); ctx.rotate(-.55);
-  const g = ctx.createLinearGradient(-W * .16, 0, W * .16, 0);
-  g.addColorStop(0, 'rgba(255,200,140,0)'); g.addColorStop(.5, 'rgba(255,200,140,.07)'); g.addColorStop(1, 'rgba(255,200,140,0)');
-  ctx.fillStyle = g; ctx.fillRect(-W * .16, 0, W * .32, H * 2.2);
-  ctx.restore();
-}
-
-// fio vermelho: a cor da casa, usada com parcimônia, como um traço de brasa
-function redThread(x, y, half, alpha, glow = 1) {
+function redThread(x, y, half, alpha) {
   if (alpha <= 0 || half <= 0) return;
   ctx.save();
   const g = ctx.createLinearGradient(x - half, 0, x + half, 0);
-  g.addColorStop(0, 'rgba(200,16,46,0)'); g.addColorStop(.18, C.red); g.addColorStop(.82, C.red); g.addColorStop(1, 'rgba(200,16,46,0)');
-  ctx.globalAlpha = alpha; ctx.fillStyle = g;
-  ctx.shadowColor = 'rgba(255,60,40,.9)'; ctx.shadowBlur = 14 * S * glow;
+  g.addColorStop(0, 'rgba(200,16,46,0)'); g.addColorStop(.2, RED); g.addColorStop(.8, RED); g.addColorStop(1, 'rgba(200,16,46,0)');
+  ctx.globalAlpha = alpha; ctx.fillStyle = g; ctx.shadowColor = 'rgba(255,60,40,.9)'; ctx.shadowBlur = 12 * S;
   ctx.fillRect(x - half, y - 1.1 * S, half * 2, 2.2 * S);
   ctx.restore();
 }
 
-function drawGlass(t) {
-  const draw = eIO(seg(t, 7.4, 9.2));
-  const fill = eOut(seg(t, 9.0, 11.9)) * .76;
-  const foam = eOut(seg(t, 10.4, 12.6)) * .17;
-
-  // líquido + espuma
-  if (fill > 0) {
-    ctx.save(); interiorPath(ctx); ctx.clip();
-    const wave = (1 - seg(t, 11, 13.2)) * 5 * S + 1.2 * S;
-    const ySurf = yAt(fill);
-    const lg = ctx.createLinearGradient(0, IN_BOT, 0, yAt(.8));
-    lg.addColorStop(0, '#7a3c0c'); lg.addColorStop(.45, '#c97a1c'); lg.addColorStop(1, '#f1b84a');
-    ctx.fillStyle = lg;
-    ctx.beginPath(); ctx.moveTo(GX - G, IN_BOT + 2);
-    for (let x = -G * .45; x <= G * .45; x += 6 * S) ctx.lineTo(GX + x, ySurf + Math.sin(x * .025 / S + t * 4) * wave);
-    ctx.lineTo(GX + G, IN_BOT + 2); ctx.closePath(); ctx.fill();
-    // brilho interno (luz atravessando o chope)
-    const hg = ctx.createRadialGradient(GX - .05 * G, yAt(.35), 0, GX, yAt(.35), G * .45);
-    hg.addColorStop(0, 'rgba(255,220,140,.55)'); hg.addColorStop(1, 'rgba(255,220,140,0)');
-    ctx.globalCompositeOperation = 'lighter'; ctx.fillStyle = hg; ctx.fillRect(GX - G, G_TOP, G * 2, G);
-    // bolhas
-    const ba = seg(t, 9.4, 10.4);
-    ctx.fillStyle = 'rgba(255,240,200,.55)';
-    for (const b of glassBubbles) {
-      const u = ((b.ph + t * b.sp) % 1) * fill;
-      const y = yAt(u), x = GX + b.x * rIn(u) * .86 + Math.sin(t * 3 + b.wob) * 2 * S;
-      if (y < ySurf + 4 * S) continue;
-      ctx.globalAlpha = ba * .8; ctx.beginPath(); ctx.arc(x, y, b.r, 0, 6.283); ctx.fill();
-    }
-    ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
-    // espuma (colarinho)
-    if (foam > 0) {
-      const yF0 = ySurf + 2 * S, yF1 = yAt(fill + foam);
-      const fg = ctx.createLinearGradient(0, yF0, 0, yF1);
-      fg.addColorStop(0, '#d9c49c'); fg.addColorStop(.35, '#f1e6cf'); fg.addColorStop(1, '#fbf5e8');
-      ctx.fillStyle = fg;
-      ctx.beginPath(); ctx.moveTo(GX - G, yF0 + 6 * S);
-      for (let x = -G * .45; x <= G * .45; x += 5 * S) ctx.lineTo(GX + x, yF0 + Math.sin(x * .05 / S + t * 2) * 2 * S);
-      ctx.lineTo(GX + G, yF0 + 6 * S); ctx.lineTo(GX + G, yF1); ctx.lineTo(GX - G, yF1); ctx.closePath(); ctx.fill();
-      // topo levemente abaulado
-      const rr = rIn(fill + foam);
-      ctx.beginPath(); ctx.ellipse(GX, yF1 + 1, rr, 9 * S * (foam / .17), 0, Math.PI, 0); ctx.fill();
-      // textura de microbolhas
-      const R = rng(5); ctx.fillStyle = 'rgba(190,160,110,.25)';
-      for (let i = 0; i < 140; i++) {
-        const u = fill + R() * foam, xx = GX + (R() * 2 - 1) * rIn(u) * .95, yy = yAt(u);
-        ctx.beginPath(); ctx.arc(xx, yy, (.6 + R() * 1.6) * S, 0, 6.283); ctx.fill();
-      }
-    }
-    ctx.restore();
-  }
-
-  // filete de chope caindo
-  const pourOn = seg(t, 8.9, 9.25), pourOff = eIn(seg(t, 11.5, 12.1));
-  if (pourOn > 0 && pourOff < 1) {
-    const ySurf = yAt(Math.max(fill, .01));
-    const top = lerp(-20, ySurf, pourOff), bot = lerp(-20, ySurf, pourOn);
-    const px = GX - .1 * G;
-    const sg = ctx.createLinearGradient(0, top, 0, bot);
-    sg.addColorStop(0, 'rgba(241,184,74,.2)'); sg.addColorStop(.4, 'rgba(230,160,50,.95)'); sg.addColorStop(1, 'rgba(245,200,110,.95)');
-    ctx.fillStyle = sg; ctx.beginPath();
-    for (let y = top; y <= bot; y += 8) ctx.lineTo(px + Math.sin(y * .02 + t * 9) * 1.4 * S - 3.5 * S, y);
-    for (let y = bot; y >= top; y -= 8) ctx.lineTo(px + Math.sin(y * .02 + t * 9) * 1.4 * S + 3.5 * S, y);
-    ctx.fill();
-  }
-
-  drawLabel(t);
-
-  // contorno em latão, desenhado como um traço de pena
-  if (draw > 0) {
-    ctx.save();
-    ctx.strokeStyle = C.brass; ctx.lineWidth = 2 * S; ctx.lineJoin = ctx.lineCap = 'round';
-    ctx.shadowColor = 'rgba(217,183,126,.6)'; ctx.shadowBlur = 8 * S;
-    ctx.setLineDash([outline.len * draw, outline.len]);
-    ctx.beginPath(); outline.pts.forEach(([x, y]) => ctx.lineTo(x, y)); ctx.stroke();
-    // fundo grosso do vidro
-    ctx.globalAlpha = .55 * draw; ctx.setLineDash([]);
-    ctx.beginPath(); ctx.moveTo(GX - rIn(0), IN_BOT); ctx.lineTo(GX + rIn(0), IN_BOT); ctx.stroke();
-    ctx.globalAlpha = 1;
-    // alça em "D", desenhada logo depois do corpo
-    const hd = eIO(seg(t, 8.4, 9.6));
-    if (hd > 0) {
-      const xw = GX + rIn(.5) + WALL, yT = yAt(.84), yB = yAt(.16), o = .27 * G, i = .15 * G, th = .075 * G;
-      const outer = new Path2D(), inner = new Path2D();
-      outer.moveTo(xw, yT); outer.bezierCurveTo(xw + o, yT - .02 * G, xw + o, yB + .02 * G, xw, yB);
-      inner.moveTo(xw, yT + th); inner.bezierCurveTo(xw + i, yT + th, xw + i, yB - th, xw, yB - th);
-      const hl = 1.6 * G;
-      ctx.setLineDash([hl * hd, hl]);
-      ctx.stroke(outer); ctx.stroke(inner);
-      ctx.setLineDash([]);
-      // massa de vidro da alça
-      ctx.globalAlpha = .07 * hd; ctx.fillStyle = '#ffe9c4'; ctx.shadowBlur = 0;
-      const body = new Path2D();
-      body.moveTo(xw, yT); body.bezierCurveTo(xw + o, yT - .02 * G, xw + o, yB + .02 * G, xw, yB);
-      body.lineTo(xw, yB - th); body.bezierCurveTo(xw + i, yB - th, xw + i, yT + th, xw, yT + th); body.closePath();
-      ctx.fill(body);
-      ctx.globalAlpha = 1; ctx.shadowBlur = 8 * S;
-    }
-    // reflexo vertical do vidro
-    const ra = seg(t, 9, 10) * .5;
-    if (ra > 0) {
-      ctx.globalAlpha = ra; ctx.strokeStyle = '#fff3dc'; ctx.lineWidth = 3 * S; ctx.shadowBlur = 0;
-      ctx.beginPath();
-      for (let u = .18; u <= .7; u += .02) ctx.lineTo(GX - rIn(u) + 16 * S, yAt(u));
-      ctx.stroke();
-    }
-    ctx.restore();
-  }
-}
-
-// rótulo da cerveja, aplicado no vidro da caneca
-function drawLabel(t) {
-  const a = eOut(seg(t, 9.0, 10.2));
-  if (a <= 0) return;
-  const ly = yAt(.5), rx = .19 * G, ry = .125 * G;
-  ctx.save();
-  ctx.globalAlpha = a;
-  ctx.translate(GX, ly); ctx.scale(lerp(.92, 1, a), lerp(.92, 1, a));
-  const g = ctx.createLinearGradient(-rx, 0, rx, 0);
-  g.addColorStop(0, '#4a0a15'); g.addColorStop(.35, '#7a1222'); g.addColorStop(.65, '#7a1222'); g.addColorStop(1, '#4a0a15');
-  ctx.shadowColor = 'rgba(0,0,0,.35)'; ctx.shadowBlur = 10 * S;
-  ctx.fillStyle = g; ctx.beginPath(); ctx.ellipse(0, 0, rx, ry, 0, 0, 6.283); ctx.fill();
-  ctx.shadowBlur = 0;
-  ctx.strokeStyle = C.brass; ctx.lineWidth = 1.6 * S;
-  ctx.beginPath(); ctx.ellipse(0, 0, rx, ry, 0, 0, 6.283); ctx.stroke();
-  ctx.globalAlpha = a * .6; ctx.lineWidth = .8 * S;
-  ctx.beginPath(); ctx.ellipse(0, 0, rx - 6 * S, ry - 6 * S, 0, 0, 6.283); ctx.stroke();
-  ctx.restore();
-  spaced(LABEL, GX, ly + 3 * S, `500 ${40 * S}px 'Cormorant Garamond'`, 5 * S, C.cream, a);
-  spaced('CERVEJA', GX, ly - .072 * G, `400 ${10.5 * S}px 'Jost'`, 4.5 * S, C.brass, a);
-  ctx.save(); ctx.globalAlpha = a * .8; ctx.fillStyle = C.brass;
-  ctx.fillRect(GX - 26 * S, ly + .062 * G, 52 * S, 1 * S);
-  ctx.restore();
-  // reflexo do vidro passando por cima do rótulo
-  ctx.save(); ctx.globalAlpha = a * .18; ctx.fillStyle = '#fff3dc';
-  ctx.beginPath(); ctx.ellipse(GX - rx * .55, ly, rx * .12, ry * .85, 0, 0, 6.283); ctx.fill();
-  ctx.restore();
-}
-
-function drawBokeh(t, a) {
-  if (a <= 0) return;
-  const bg = ctx.createLinearGradient(0, 0, 0, H);
-  bg.addColorStop(0, '#d9932e'); bg.addColorStop(.5, '#a85b14'); bg.addColorStop(1, '#4a1f06');
-  ctx.globalAlpha = a; ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
-  const hg = ctx.createRadialGradient(CX, CY * .8, 0, CX, CY, Math.max(W, H) * .6);
-  hg.addColorStop(0, 'rgba(255,200,120,.32)'); hg.addColorStop(1, 'rgba(255,200,120,0)');
-  ctx.globalCompositeOperation = 'screen'; ctx.fillStyle = hg; ctx.fillRect(0, 0, W, H);
-  for (const b of bokeh) {
-    const sz = (10 + b.z * b.z * 120) * S;
-    const sp = (.04 + b.z * .11);
-    const y = ((b.y0 - (t - 13) * sp) % 1 + 1) % 1 * (H + sz * 2) - sz;
-    const x = b.x * W + Math.sin(t * .8 + b.ph) * 14 * S * b.z;
-    ctx.globalAlpha = a * (.25 + b.z * .5);
-    ctx.filter = b.z > .75 ? `blur(${(b.z - .75) * 24 * S}px)` : 'none';
-    ctx.drawImage(SP_BOKEH, x - sz, y - sz, sz * 2, sz * 2);
-  }
-  ctx.filter = 'none'; ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
-  // penumbra central para o texto respirar
-  const dg = ctx.createRadialGradient(CX, CY, 0, CX, CY, 420 * S);
-  dg.addColorStop(0, `rgba(40,16,4,${.5 * a})`); dg.addColorStop(1, 'rgba(40,16,4,0)');
-  ctx.fillStyle = dg; ctx.fillRect(0, 0, W, H);
-}
-
 const nameCanvas = document.createElement('canvas'); nameCanvas.width = W; nameCanvas.height = H;
 const nctx = nameCanvas.getContext('2d');
+const LOGO_Y = W / H < 1 ? H * .3 : H * .36;
 
 function drawLogo(t) {
-  const ringY = CY - 190 * S, ringR = 74 * S;
-  // anel de latão
-  const ring = eIO(seg(t, 18.9, 20.4));
+  const ringY = LOGO_Y - 190 * S, ringR = 74 * S;
+  const ring = eIO(seg(t, 19.0, 20.5));
   if (ring > 0) {
-    ctx.save(); ctx.strokeStyle = C.brass; ctx.lineWidth = 1.5 * S; ctx.globalAlpha = .9;
+    ctx.save(); ctx.strokeStyle = BRASS; ctx.lineWidth = 1.5 * S; ctx.globalAlpha = .9;
     ctx.beginPath(); ctx.arc(CX, ringY, ringR, -Math.PI / 2, -Math.PI / 2 + ring * Math.PI * 2); ctx.stroke();
-    ctx.globalAlpha = .45 * ring;
-    ctx.beginPath(); ctx.arc(CX, ringY, ringR - 7 * S, 0, Math.PI * 2); ctx.stroke();
+    ctx.globalAlpha = .45 * ring; ctx.beginPath(); ctx.arc(CX, ringY, ringR - 7 * S, 0, Math.PI * 2); ctx.stroke();
     ctx.restore();
   }
   // monograma: a casa, em traço contínuo
-  const hk = eIO(seg(t, 19.5, 20.9));
+  const hk = eIO(seg(t, 19.6, 21));
   if (hk > 0) {
-    const s = 33 * S, by = ringY + s * .98;
-    const house = new Path2D();
-    house.moveTo(CX - .32 * s, by);
-    house.lineTo(CX - s, by); house.lineTo(CX - s, by - 1.05 * s);
-    house.lineTo(CX, by - 1.9 * s); house.lineTo(CX + s, by - 1.05 * s);
-    house.lineTo(CX + s, by); house.lineTo(CX + .32 * s, by);
-    house.lineTo(CX + .32 * s, by - .5 * s); house.arc(CX, by - .5 * s, .32 * s, 0, Math.PI, true);
-    house.lineTo(CX - .32 * s, by);
-    ctx.save(); ctx.strokeStyle = C.cream; ctx.lineWidth = 2 * S; ctx.lineJoin = ctx.lineCap = 'round';
+    const s = 33 * S, by = ringY + s * .98, house = new Path2D();
+    house.moveTo(CX - .32 * s, by); house.lineTo(CX - s, by); house.lineTo(CX - s, by - 1.05 * s);
+    house.lineTo(CX, by - 1.9 * s); house.lineTo(CX + s, by - 1.05 * s); house.lineTo(CX + s, by);
+    house.lineTo(CX + .32 * s, by); house.lineTo(CX + .32 * s, by - .5 * s);
+    house.arc(CX, by - .5 * s, .32 * s, 0, Math.PI, true); house.lineTo(CX - .32 * s, by);
+    ctx.save(); ctx.strokeStyle = CREAM; ctx.lineWidth = 2 * S; ctx.lineJoin = ctx.lineCap = 'round';
     ctx.shadowColor = 'rgba(255,214,150,.5)'; ctx.shadowBlur = 6 * S;
-    const hl = 8.5 * s; ctx.setLineDash([hl * hk, hl]); ctx.stroke(house);
-    ctx.restore();
+    const hl = 8.5 * s; ctx.setLineDash([hl * hk, hl]); ctx.stroke(house); ctx.restore();
   }
   // nome — letra a letra, com o espaçamento se assentando
-  const nk = seg(t, 19.4, 21.6);
+  const nk = seg(t, 19.5, 21.7);
   let subW = 0;
   if (nk > 0) {
-    nctx.clearRect(0, 0, W, H);
-    nctx.save();
-    nctx.textBaseline = 'middle'; nctx.fillStyle = C.cream;
+    nctx.clearRect(0, 0, W, H); nctx.save();
+    nctx.textBaseline = 'middle'; nctx.fillStyle = CREAM;
+    nctx.shadowColor = 'rgba(0,0,0,.6)'; nctx.shadowBlur = 18 * S;
     let fs = 104 * S, sp = lerp(46, 28, eOut(nk)) * S;
     nctx.font = `500 ${fs}px 'Cormorant Garamond'`;
     const chars = [...NAME];
@@ -491,128 +491,73 @@ function drawLogo(t) {
     let px = CX - total / 2;
     chars.forEach((ch, i) => {
       const li = eOut(clamp((nk * (chars.length + 4) - i) / 5));
-      nctx.globalAlpha = li; nctx.fillText(ch, px, CY - 6 * S + (1 - li) * 18 * S);
-      px += ws[i] + sp;
+      nctx.globalAlpha = li; nctx.fillText(ch, px, LOGO_Y - 6 * S + (1 - li) * 18 * S); px += ws[i] + sp;
     });
-    // CHOPE — segunda linha, mais contida
-    const ck = eOut(seg(t, 20.5, 21.7));
-    subW = spaced(SUB, CX, CY + 78 * S, `400 ${34 * S}px 'Jost'`, lerp(30, 22, ck) * S, C.brass, ck, null, nctx);
+    const ck = eOut(seg(t, 20.6, 21.8));
+    subW = spaced(SUB, CX, LOGO_Y + 78 * S, `400 ${34 * S}px 'Jost'`, lerp(30, 22, ck) * S, BRASS, ck, null, nctx);
     // brilho que atravessa o nome
-    const sh = seg(t, 21.9, 23.1);
+    const sh = seg(t, 22.0, 23.2);
     if (sh > 0 && sh < 1) {
-      nctx.globalCompositeOperation = 'source-atop'; nctx.globalAlpha = 1;
+      nctx.shadowBlur = 0; nctx.globalCompositeOperation = 'source-atop'; nctx.globalAlpha = 1;
       const sx = lerp(CX - total, CX + total, eIO(sh));
       const g = nctx.createLinearGradient(sx - 120 * S, 0, sx + 120 * S, 0);
       g.addColorStop(0, 'rgba(255,214,150,0)'); g.addColorStop(.5, 'rgba(255,214,150,1)'); g.addColorStop(1, 'rgba(255,214,150,0)');
       nctx.fillStyle = g; nctx.fillRect(0, 0, W, H);
     }
-    nctx.restore();
-    ctx.drawImage(nameCanvas, 0, 0);
+    nctx.restore(); ctx.drawImage(nameCanvas, 0, 0);
   }
-  // fios vermelhos ladeando o CHOPE
-  const th = eIO(seg(t, 20.8, 22));
+  // fios vermelhos ladeando o CHOPP
+  const th = eIO(seg(t, 20.9, 22.1));
   const half = 80 * S * th, off = subW / 2 + 34 * S + 80 * S;
-  redThread(CX - off, CY + 78 * S, half, th, 1);
-  redThread(CX + off, CY + 78 * S, half, th, 1);
-  // assinatura
-  const tg = eOut(seg(t, 21.4, 22.6));
-  if (tg > 0) spaced(TAG, CX, CY + 160 * S, `300 ${20 * S}px 'Jost'`, 10 * S + (1 - tg) * 6 * S, C.brass, tg * .85);
+  redThread(CX - off, LOGO_Y + 78 * S, half, th);
+  redThread(CX + off, LOGO_Y + 78 * S, half, th);
 }
 
-function drawEmbers(t, a) {
-  if (a <= 0) return;
-  ctx.save(); ctx.globalCompositeOperation = 'lighter';
-  for (const e of embers) {
-    const life = ((e.y0 + t * e.sp) % 1);
-    const y = H * (1.05 - life * .75);
-    const x = e.x + Math.sin(t * .9 + e.ph) * 24 * S + life * 30 * S;
-    const fl = .6 + .4 * Math.sin(t * 7 * e.z + e.ph * 3);
-    const r = (5 + e.z * 6) * S;
-    ctx.globalAlpha = a * fl * Math.sin(life * Math.PI) * e.z * .9;
-    ctx.drawImage(SP_EMBER, x - r, y - r, r * 2, r * 2);
-  }
+function word(t, a, b, text, y) {
+  const k = win(t, a, a + 1.1, b - .7, b);
+  if (k <= 0) return;
+  const reveal = eOut(seg(t, a, a + 1.6));
+  ctx.save(); ctx.filter = `blur(${(1 - reveal) * 10 * S}px)`;
+  ctx.shadowColor = 'rgba(0,0,0,.7)'; ctx.shadowBlur = 24 * S;
+  spaced(text, CX, y - (1 - reveal) * 10 * S, `italic 300 ${104 * S}px 'Cormorant Garamond'`, lerp(26, 4, reveal) * S, '#fff7e8', k);
   ctx.restore();
 }
 
 // ── quadro ──────────────────────────────────────────────────
 function render(t) {
+  // luz: o estúdio acende devagar
+  const ign = eIO(seg(t, .2, 3.2));
+  renderer.toneMappingExposure = lerp(.05, .95, ign);
+  scene.environmentIntensity = lerp(.2, 1, ign);
+  scene.environmentRotation.y = lerp(-.9, .15, eOut(seg(t, 0, 6))) + Math.sin(t * .2) * .05;
+  bgMat.uniforms.uGlow.value = eOut(seg(t, .5, 4));
+  bgMat.uniforms.uWarm.value = seg(t, 7, 12);
+  key.intensity = 10 * ign; rim.intensity = 3.5 * ign;
+
+  setLiquid(t);
+  camAt(t);
+  renderer.render(scene, camera);
+
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over'; ctx.filter = 'none';
-  ctx.fillStyle = '#080504'; ctx.fillRect(0, 0, W, H);
+  ctx.drawImage(glCanvas, 0, 0);
 
-  // I. Prelúdio — escuridão, poeira dourada num feixe, o fio vermelho nasce
-  const pre = 1 - seg(t, 4.2, 5.5);
-  drawBeam(seg(t, .2, 2.4) * pre);
-  drawDust(t, seg(t, .2, 2.2) * .9, true);
+  word(t, 15.6, 18.4, 'momento', CY);
 
-  // II. Madeira — a fenda se abre a partir do fio
-  const open = eIO(seg(t, 3.0, 5.2));
-  if (t < 18.6 && open > 0) {
-    const zoomA = lerp(1.08, 1.0, eOut(seg(t, 3, 9)));
-    const zoomB = 1 + eIn(seg(t, 13.0, 15.1)) * 11;
-    ctx.save();
-    if (open < 1) { ctx.beginPath(); ctx.rect(0, CY - H * open / 2, W, H * open); ctx.clip(); }
-    // câmera: mergulho no copo
-    const fx = GX - .15 * G, fy = yAt(.24);
-    ctx.translate(fx, fy); ctx.scale(zoomB, zoomB); ctx.translate(-fx, -fy);
-    drawWood(t, zoomA, Math.sin(t * .15) * 10 * S);
-    // luz que passeia pela madeira, depois foca no copo
-    const sweep = eIO(seg(t, 3.2, 7.6));
-    const lx = lerp(W * .15, CX, sweep), ly = lerp(CY - H * .1, GY, seg(t, 6, 9));
-    const focus = seg(t, 7, 9);
-    lightPool(lx, ly, lerp(W * .62, W * .4, focus), lerp(.82, .9, focus));
-    warmGlow(lx, ly, W * .35, .55);
-    drawGlass(t);
-    ctx.restore();
-    // bordas da fenda: o fio se divide em dois
-    if (open < 1) {
-      const ea = 1 - open;
-      redThread(CX, CY - H * open / 2, W * .5, ea);
-      redThread(CX, CY + H * open / 2, W * .5, ea);
-    }
-  }
-
-  // fio vermelho nascendo (antes da abertura)
-  if (t < 3.05) {
-    const g = eIO(seg(t, .9, 2.9));
-    redThread(CX, CY, g * W * .5, seg(t, .9, 1.3));
-    if (g > 0 && g < 1) { // brasa na ponta
-      ctx.save(); ctx.globalCompositeOperation = 'lighter';
-      const r = 26 * S;
-      [-1, 1].forEach(s => ctx.drawImage(SP_EMBER, CX + s * g * W * .42 - r, CY - r, r * 2, r * 2));
-      ctx.restore();
-    }
-  }
-
-  chapter(t, 4.4, 7.3, 'I', 'madeira', CY);
-  chapter(t, 9.6, 13.0, 'II', 'malte', GY + G / 2 + 130 * S);
-
-  // III. Momento — dentro do chope, o mundo vira bolha e luz
-  const bk = seg(t, 14.2, 15.0) * (1 - seg(t, 17.6, 18.9));
-  if (bk > 0 && t < 19) drawBokeh(t, bk);
-  if (t > 14 && t < 19) {
-    ctx.fillStyle = `rgba(8,5,4,${eIO(seg(t, 17.6, 18.9))})`; ctx.fillRect(0, 0, W, H);
-  }
-  chapter(t, 15.2, 18.0, 'III', 'momento', CY, '#fff7e8');
-
-  // IV. Assinatura — madeira em penumbra, a casa se apresenta
-  if (t >= 18.4) {
-    const a = eOut(seg(t, 18.4, 20));
-    ctx.save(); ctx.globalAlpha = a;
-    drawWood(t, lerp(1.06, 1.0, eOut(seg(t, 18.4, 24))));
-    lightPool(CX, CY - 60 * S, Math.max(W, H) * .5, .93);
-    warmGlow(CX, CY - 120 * S, W * .3, .5);
-    ctx.restore();
-    drawEmbers(t, seg(t, 19, 20.5));
-    drawDust(t, seg(t, 19.5, 21) * .45, false);
+  // assinatura: a cena recua para a penumbra e o nome aparece
+  if (t > 18.6) {
+    const d = eIO(seg(t, 18.6, 20.2));
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, `rgba(0,0,0,${.75 * d})`); g.addColorStop(.55, `rgba(0,0,0,${.45 * d})`); g.addColorStop(1, `rgba(0,0,0,${.15 * d})`);
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
     drawLogo(t);
   }
 
-  // acabamento: vinheta + grão de filme + fade final
+  // acabamento: vinheta + grão de filme + fade
   const vg = ctx.createRadialGradient(CX, CY, Math.min(W, H) * .35, CX, CY, Math.hypot(W, H) * .6);
-  vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(0,0,0,.6)');
+  vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(0,0,0,.55)');
   ctx.fillStyle = vg; ctx.fillRect(0, 0, W, H);
-  ctx.save(); ctx.globalCompositeOperation = 'overlay'; ctx.globalAlpha = .07;
+  ctx.save(); ctx.globalCompositeOperation = 'overlay'; ctx.globalAlpha = .05;
   const f = Math.floor(t * 30);
   ctx.translate((hash(f, 1) * 256) | 0, (hash(f, 2) * 256) | 0);
   ctx.fillStyle = grain; ctx.fillRect(-256, -256, W + 512, H + 512);
@@ -624,11 +569,10 @@ function render(t) {
 // ── execução ────────────────────────────────────────────────
 window.DUR = DUR;
 window.render = render;
-window.ready = document.fonts.load(`500 40px 'Cormorant Garamond'`)
-  .then(() => Promise.all([
-    document.fonts.load(`italic 300 40px 'Cormorant Garamond'`),
-    document.fonts.load(`300 40px 'Jost'`), document.fonts.load(`400 40px 'Jost'`),
-  ])).then(() => document.fonts.ready);
+window.ready = Promise.all([
+  document.fonts.load(`500 40px 'Cormorant Garamond'`), document.fonts.load(`italic 300 40px 'Cormorant Garamond'`),
+  document.fonts.load(`300 40px 'Jost'`), document.fonts.load(`400 40px 'Jost'`),
+]).then(() => document.fonts.ready).then(() => { paintLabel(); renderer.compile(scene, camera); });
 
 if (Q.has('render')) {
   document.body.classList.add('render');

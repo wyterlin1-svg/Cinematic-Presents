@@ -1,5 +1,5 @@
 """Trilha sonora sintetizada (sem bancos de som): pad quente, notas de sino,
-brasa crepitando, filete de chope, efervescência, mergulho e impacto final.
+filete de chopp, efervescência, mergulho e impacto final.
 Saída: trilha.wav (48 kHz, estéreo). Uso: python3 trilha.py"""
 import numpy as np
 import wave
@@ -49,7 +49,7 @@ for m, g in [(38, .9), (45, .7), (54, .45), (57, .4), (61, .3), (64, .28)]:
         v = np.sin(2 * np.pi * f * t + ph) + .25 * np.sin(4 * np.pi * f * t + ph) + .1 * np.sin(6 * np.pi * f * t)
         breath = .75 + .25 * np.sin(2 * np.pi * .11 * t + ph)
         add(v * breath, pan, g * .045)
-pad_env = env(0, 4, 13, 15.5) + .35 * env(15.5, 16.5, 17.2, 18.6) + env(18.6, 20.5, 23, 24)
+pad_env = env(0, 4, 14, 16) + .35 * env(16, 16.8, 17.6, 18.8) + env(18.8, 20.5, 23, 24)
 L *= np.clip(pad_env, 0, 1.2)
 Rr *= np.clip(pad_env, 0, 1.2)
 
@@ -67,10 +67,10 @@ def bell(at, midi, gain=.2, pan=0.0, decay=2.8):
 
 
 # notas que marcam cada capítulo
-bell(1.0, 74, .10, -.3)                        # o fio nasce
-bell(4.5, 69, .16, -.2); bell(4.9, 76, .09, .3)  # I madeira
-bell(9.7, 66, .16, .2); bell(10.1, 73, .09, -.3)  # II malte
-bell(15.3, 71, .15, 0); bell(15.7, 78, .08, .4)   # III momento
+bell(1.0, 74, .10, -.3)                          # o estúdio acende
+bell(3.0, 69, .14, -.2); bell(3.4, 76, .08, .3)  # a caneca aparece
+bell(5.7, 66, .14, .2); bell(6.1, 73, .08, -.3)  # o chopp começa a cair
+bell(15.6, 71, .15, 0); bell(16.0, 78, .08, .4)  # momento
 for i, m in enumerate([62, 66, 69, 74]):          # assinatura — arpejo resolvendo
     bell(19.5 + i * .18, m, .14 - i * .015, -.4 + i * .27, 4)
 
@@ -82,22 +82,22 @@ for at in np.sort(rng.uniform(0, DUR, 260)):
     if s + ln < N:
         crack[s:s + ln] += rng.normal(0, 1, ln) * np.exp(-np.arange(ln) / (ln / 4)) * rng.uniform(.2, 1)
 crack = bandpass(crack, 800, 6000)
-add(crack * (env(0, 2, 6, 8) * .5 + env(18.8, 20, 23, 24)), rng.uniform(-.3, .3), .05)
+add(crack * env(19, 20.5, 23, 24), rng.uniform(-.3, .3), .02)
 
 # filete de chope + efervescência
 pour = bandpass(rng.normal(0, 1, N), 300, 2400) * (1 + .3 * np.sin(2 * np.pi * 7 * t))
-add(pour * env(8.9, 9.4, 11.4, 12.1), -.15, .05)
+add(pour * env(5.6, 6.0, 11.0, 11.6), -.15, .05)
 fizz = np.zeros(N)
 idx = rng.choice(N, 9000, replace=False)
 fizz[idx] = rng.normal(0, 1, len(idx))
 fizz = bandpass(fizz, 4000, 14000)
-fizz_env = env(9.4, 11, 13, 14) + 1.6 * env(13.5, 15, 16.8, 18.4)
+fizz_env = env(6.5, 8, 13, 14) + 1.6 * env(14.2, 15.6, 17.4, 18.8)
 add(fizz * fizz_env, .2, .4)
 
 # mergulho no copo: varredura ascendente de ruído
 sweep = rng.normal(0, 1, N)
 sw = np.zeros(N)
-for a, b, lo, hi in [(12.6, 13.4, 200, 600), (13.4, 14.2, 400, 1500), (14.2, 15.0, 900, 3500)]:
+for a, b, lo, hi in [(13.6, 14.4, 200, 600), (14.4, 15.2, 400, 1500), (15.2, 16.0, 900, 3500)]:
     seg = env(a, a + .3, b - .2, b + .3)
     sw += bandpass(sweep, lo, hi) * seg
 add(sw, 0, .06)

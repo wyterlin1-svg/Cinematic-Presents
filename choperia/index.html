@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Abertura Choperia</title>
+<title>Lá em Casa Chope</title>
 <link rel="stylesheet" href="fonts.css">
 <style>
   :root { --bg: #0b0705; --cream: #efe4d0; --brass: #d9b77e; }
@@ -25,12 +25,14 @@
 <audio id="trilha" src="trilha.m4a" preload="auto"></audio>
 <script>
 // ─────────────────────────────────────────────────────────────
-//  Abertura cinemática — Choperia
+//  Abertura cinemática — Lá em Casa Chope
 //  Tudo é procedural: madeira, chope, espuma, bolhas e brasas.
-//  Parâmetros de URL: ?nome=CHOPERIA&tag=MADEIRA · MALTE · MOMENTO&w=1920&h=1080
+//  Parâmetros de URL: ?nome=Lá em Casa&sub=Chope&rotulo=Ashby&tag=MADEIRA · MALTE · MOMENTO&w=1920&h=1080
 // ─────────────────────────────────────────────────────────────
 const Q = new URLSearchParams(location.search);
-const NAME = (Q.get('nome') || 'CHOPERIA').toUpperCase();
+const NAME = (Q.get('nome') || 'Lá em Casa').toUpperCase();
+const SUB = (Q.get('sub') || 'Chope').toUpperCase();
+const LABEL = (Q.get('rotulo') || 'Ashby').toUpperCase();
 const TAG = (Q.get('tag') || 'MADEIRA · MALTE · MOMENTO').toUpperCase();
 const W = +Q.get('w') || 1920, H = +Q.get('h') || 1080;
 const DUR = 24;
@@ -157,21 +159,22 @@ const bokeh = Array.from({ length: 95 }, () => ({
   x: R1(), y0: R1(), z: R1(), ph: R1() * 6.28,
 }));
 
-// ── copo (tulipa) ───────────────────────────────────────────
-const G = 540 * S;                       // altura do copo
-const GX = CX, GY = CY - 40 * S;          // centro
+// ── caneca de chope ─────────────────────────────────────────
+const G = 520 * S;                       // altura da caneca
+const GX = CX - 34 * S, GY = CY - 40 * S; // centro do corpo (alça compensa à direita)
 const G_TOP = GY - G / 2, G_BOT = GY + G / 2;
-const BASE = .07 * G;                    // fundo de vidro espesso
+const BASE = .1 * G;                     // fundo de vidro espesso
 const IN_BOT = G_BOT - BASE, IN_H = IN_BOT - G_TOP;
-const rIn = u => (0.14 + 0.125 * Math.sin(Math.min(u / .6, 1) * Math.PI / 2) - 0.028 * sstep(.6, 1, u)) * G;
+const rIn = u => (0.25 + 0.02 * u) * G;  // corpo reto, levemente aberto em cima
 const yAt = u => IN_BOT - u * IN_H;
-const WALL = 7 * S;
+const WALL = 10 * S;
 
 const outline = (() => {
-  const pts = [], N = 60;
+  const pts = [], N = 60, cr = 16 * S;
   for (let i = N; i >= 0; i--) { const u = i / N; pts.push([GX - rIn(u) - WALL, yAt(u)]); }
   const rb = rIn(0) + WALL;
-  pts.push([GX - rb, G_BOT - 6 * S], [GX - rb + 6 * S, G_BOT], [GX + rb - 6 * S, G_BOT], [GX + rb, G_BOT - 6 * S]);
+  for (let i = 0; i <= 8; i++) { const a = Math.PI - i / 8 * Math.PI / 2; pts.push([GX - rb + cr + Math.cos(a) * cr, G_BOT - cr + Math.sin(a) * cr]); }
+  for (let i = 0; i <= 8; i++) { const a = Math.PI / 2 - i / 8 * Math.PI / 2; pts.push([GX + rb - cr + Math.cos(a) * cr, G_BOT - cr + Math.sin(a) * cr]); }
   for (let i = 0; i <= N; i++) { const u = i / N; pts.push([GX + rIn(u) + WALL, yAt(u)]); }
   let len = 0;
   for (let i = 1; i < pts.length; i++) len += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
@@ -191,19 +194,19 @@ const glassBubbles = Array.from({ length: 90 }, () => ({
 }));
 
 // ── texto ───────────────────────────────────────────────────
-function spaced(text, x, y, font, spacing, color, alpha = 1, perLetter) {
-  ctx.save();
-  ctx.font = font; ctx.fillStyle = color; ctx.textBaseline = 'middle';
-  const ws = [...text].map(ch => ctx.measureText(ch).width);
+function spaced(text, x, y, font, spacing, color, alpha = 1, perLetter, c = ctx) {
+  c.save();
+  c.font = font; c.fillStyle = color; c.textBaseline = 'middle';
+  const ws = [...text].map(ch => c.measureText(ch).width);
   const total = ws.reduce((a, b) => a + b, 0) + spacing * (ws.length - 1);
   let px = x - total / 2;
   [...text].forEach((ch, i) => {
     const pl = perLetter ? perLetter(i, ws.length) : { a: 1, dy: 0 };
-    ctx.globalAlpha = alpha * pl.a;
-    ctx.fillText(ch, px, y + (pl.dy || 0));
+    c.globalAlpha = alpha * pl.a;
+    c.fillText(ch, px, y + (pl.dy || 0));
     px += ws[i] + spacing;
   });
-  ctx.restore();
+  c.restore();
   return total;
 }
 
@@ -335,7 +338,7 @@ function drawGlass(t) {
   if (pourOn > 0 && pourOff < 1) {
     const ySurf = yAt(Math.max(fill, .01));
     const top = lerp(-20, ySurf, pourOff), bot = lerp(-20, ySurf, pourOn);
-    const px = GX - .06 * G;
+    const px = GX - .1 * G;
     const sg = ctx.createLinearGradient(0, top, 0, bot);
     sg.addColorStop(0, 'rgba(241,184,74,.2)'); sg.addColorStop(.4, 'rgba(230,160,50,.95)'); sg.addColorStop(1, 'rgba(245,200,110,.95)');
     ctx.fillStyle = sg; ctx.beginPath();
@@ -344,6 +347,8 @@ function drawGlass(t) {
     ctx.fill();
   }
 
+  drawLabel(t);
+
   // contorno em latão, desenhado como um traço de pena
   if (draw > 0) {
     ctx.save();
@@ -351,7 +356,29 @@ function drawGlass(t) {
     ctx.shadowColor = 'rgba(217,183,126,.6)'; ctx.shadowBlur = 8 * S;
     ctx.setLineDash([outline.len * draw, outline.len]);
     ctx.beginPath(); outline.pts.forEach(([x, y]) => ctx.lineTo(x, y)); ctx.stroke();
-    ctx.setLineDash([]);
+    // fundo grosso do vidro
+    ctx.globalAlpha = .55 * draw; ctx.setLineDash([]);
+    ctx.beginPath(); ctx.moveTo(GX - rIn(0), IN_BOT); ctx.lineTo(GX + rIn(0), IN_BOT); ctx.stroke();
+    ctx.globalAlpha = 1;
+    // alça em "D", desenhada logo depois do corpo
+    const hd = eIO(seg(t, 8.4, 9.6));
+    if (hd > 0) {
+      const xw = GX + rIn(.5) + WALL, yT = yAt(.84), yB = yAt(.16), o = .27 * G, i = .15 * G, th = .075 * G;
+      const outer = new Path2D(), inner = new Path2D();
+      outer.moveTo(xw, yT); outer.bezierCurveTo(xw + o, yT - .02 * G, xw + o, yB + .02 * G, xw, yB);
+      inner.moveTo(xw, yT + th); inner.bezierCurveTo(xw + i, yT + th, xw + i, yB - th, xw, yB - th);
+      const hl = 1.6 * G;
+      ctx.setLineDash([hl * hd, hl]);
+      ctx.stroke(outer); ctx.stroke(inner);
+      ctx.setLineDash([]);
+      // massa de vidro da alça
+      ctx.globalAlpha = .07 * hd; ctx.fillStyle = '#ffe9c4'; ctx.shadowBlur = 0;
+      const body = new Path2D();
+      body.moveTo(xw, yT); body.bezierCurveTo(xw + o, yT - .02 * G, xw + o, yB + .02 * G, xw, yB);
+      body.lineTo(xw, yB - th); body.bezierCurveTo(xw + i, yB - th, xw + i, yT + th, xw, yT + th); body.closePath();
+      ctx.fill(body);
+      ctx.globalAlpha = 1; ctx.shadowBlur = 8 * S;
+    }
     // reflexo vertical do vidro
     const ra = seg(t, 9, 10) * .5;
     if (ra > 0) {
@@ -362,6 +389,35 @@ function drawGlass(t) {
     }
     ctx.restore();
   }
+}
+
+// rótulo da cerveja, aplicado no vidro da caneca
+function drawLabel(t) {
+  const a = eOut(seg(t, 9.0, 10.2));
+  if (a <= 0) return;
+  const ly = yAt(.5), rx = .19 * G, ry = .125 * G;
+  ctx.save();
+  ctx.globalAlpha = a;
+  ctx.translate(GX, ly); ctx.scale(lerp(.92, 1, a), lerp(.92, 1, a));
+  const g = ctx.createLinearGradient(-rx, 0, rx, 0);
+  g.addColorStop(0, '#4a0a15'); g.addColorStop(.35, '#7a1222'); g.addColorStop(.65, '#7a1222'); g.addColorStop(1, '#4a0a15');
+  ctx.shadowColor = 'rgba(0,0,0,.35)'; ctx.shadowBlur = 10 * S;
+  ctx.fillStyle = g; ctx.beginPath(); ctx.ellipse(0, 0, rx, ry, 0, 0, 6.283); ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.strokeStyle = C.brass; ctx.lineWidth = 1.6 * S;
+  ctx.beginPath(); ctx.ellipse(0, 0, rx, ry, 0, 0, 6.283); ctx.stroke();
+  ctx.globalAlpha = a * .6; ctx.lineWidth = .8 * S;
+  ctx.beginPath(); ctx.ellipse(0, 0, rx - 6 * S, ry - 6 * S, 0, 0, 6.283); ctx.stroke();
+  ctx.restore();
+  spaced(LABEL, GX, ly + 3 * S, `500 ${40 * S}px 'Cormorant Garamond'`, 5 * S, C.cream, a);
+  spaced('CERVEJA', GX, ly - .072 * G, `400 ${10.5 * S}px 'Jost'`, 4.5 * S, C.brass, a);
+  ctx.save(); ctx.globalAlpha = a * .8; ctx.fillStyle = C.brass;
+  ctx.fillRect(GX - 26 * S, ly + .062 * G, 52 * S, 1 * S);
+  ctx.restore();
+  // reflexo do vidro passando por cima do rótulo
+  ctx.save(); ctx.globalAlpha = a * .18; ctx.fillStyle = '#fff3dc';
+  ctx.beginPath(); ctx.ellipse(GX - rx * .55, ly, rx * .12, ry * .85, 0, 0, 6.283); ctx.fill();
+  ctx.restore();
 }
 
 function drawBokeh(t, a) {
@@ -392,7 +448,7 @@ const nameCanvas = document.createElement('canvas'); nameCanvas.width = W; nameC
 const nctx = nameCanvas.getContext('2d');
 
 function drawLogo(t) {
-  const ringY = CY - 175 * S, ringR = 82 * S;
+  const ringY = CY - 190 * S, ringR = 74 * S;
   // anel de latão
   const ring = eIO(seg(t, 18.9, 20.4));
   if (ring > 0) {
@@ -402,28 +458,45 @@ function drawLogo(t) {
     ctx.beginPath(); ctx.arc(CX, ringY, ringR - 7 * S, 0, Math.PI * 2); ctx.stroke();
     ctx.restore();
   }
-  // monograma
-  const mono = eOut(seg(t, 19.7, 21));
-  if (mono > 0) {
-    ctx.save(); ctx.filter = `blur(${(1 - mono) * 8 * S}px)`;
-    spaced(NAME[0], CX, ringY + 4 * S, `italic 300 ${118 * S}px 'Cormorant Garamond'`, 0, C.cream, mono);
+  // monograma: a casa, em traço contínuo
+  const hk = eIO(seg(t, 19.5, 20.9));
+  if (hk > 0) {
+    const s = 33 * S, by = ringY + s * .98;
+    const house = new Path2D();
+    house.moveTo(CX - .32 * s, by);
+    house.lineTo(CX - s, by); house.lineTo(CX - s, by - 1.05 * s);
+    house.lineTo(CX, by - 1.9 * s); house.lineTo(CX + s, by - 1.05 * s);
+    house.lineTo(CX + s, by); house.lineTo(CX + .32 * s, by);
+    house.lineTo(CX + .32 * s, by - .5 * s); house.arc(CX, by - .5 * s, .32 * s, 0, Math.PI, true);
+    house.lineTo(CX - .32 * s, by);
+    ctx.save(); ctx.strokeStyle = C.cream; ctx.lineWidth = 2 * S; ctx.lineJoin = ctx.lineCap = 'round';
+    ctx.shadowColor = 'rgba(255,214,150,.5)'; ctx.shadowBlur = 6 * S;
+    const hl = 8.5 * s; ctx.setLineDash([hl * hk, hl]); ctx.stroke(house);
     ctx.restore();
   }
   // nome — letra a letra, com o espaçamento se assentando
   const nk = seg(t, 19.4, 21.6);
+  let subW = 0;
   if (nk > 0) {
     nctx.clearRect(0, 0, W, H);
     nctx.save();
-    nctx.font = `500 ${112 * S}px 'Cormorant Garamond'`; nctx.textBaseline = 'middle'; nctx.fillStyle = C.cream;
-    const chars = [...NAME], sp = lerp(52, 34, eOut(nk)) * S;
-    const ws = chars.map(ch => nctx.measureText(ch).width);
-    const total = ws.reduce((a, b) => a + b, 0) + sp * (chars.length - 1);
+    nctx.textBaseline = 'middle'; nctx.fillStyle = C.cream;
+    let fs = 104 * S, sp = lerp(46, 28, eOut(nk)) * S;
+    nctx.font = `500 ${fs}px 'Cormorant Garamond'`;
+    const chars = [...NAME];
+    let ws = chars.map(ch => nctx.measureText(ch).width);
+    let total = ws.reduce((a, b) => a + b, 0) + sp * (chars.length - 1);
+    const fit = Math.min(1, W * .86 / total);
+    if (fit < 1) { fs *= fit; sp *= fit; ws = ws.map(w => w * fit); total *= fit; nctx.font = `500 ${fs}px 'Cormorant Garamond'`; }
     let px = CX - total / 2;
     chars.forEach((ch, i) => {
       const li = eOut(clamp((nk * (chars.length + 4) - i) / 5));
-      nctx.globalAlpha = li; nctx.fillText(ch, px, CY + 20 * S + (1 - li) * 18 * S);
+      nctx.globalAlpha = li; nctx.fillText(ch, px, CY - 6 * S + (1 - li) * 18 * S);
       px += ws[i] + sp;
     });
+    // CHOPE — segunda linha, mais contida
+    const ck = eOut(seg(t, 20.5, 21.7));
+    subW = spaced(SUB, CX, CY + 78 * S, `400 ${34 * S}px 'Jost'`, lerp(30, 22, ck) * S, C.brass, ck, null, nctx);
     // brilho que atravessa o nome
     const sh = seg(t, 21.9, 23.1);
     if (sh > 0 && sh < 1) {
@@ -436,12 +509,14 @@ function drawLogo(t) {
     nctx.restore();
     ctx.drawImage(nameCanvas, 0, 0);
   }
-  // fio vermelho sob o nome
-  const th = eIO(seg(t, 20.7, 22));
-  redThread(CX, CY + 102 * S, th * 230 * S, th, 1);
+  // fios vermelhos ladeando o CHOPE
+  const th = eIO(seg(t, 20.8, 22));
+  const half = 80 * S * th, off = subW / 2 + 34 * S + 80 * S;
+  redThread(CX - off, CY + 78 * S, half, th, 1);
+  redThread(CX + off, CY + 78 * S, half, th, 1);
   // assinatura
   const tg = eOut(seg(t, 21.4, 22.6));
-  if (tg > 0) spaced(TAG, CX, CY + 160 * S, `300 ${22 * S}px 'Jost'`, 10 * S + (1 - tg) * 6 * S, C.brass, tg);
+  if (tg > 0) spaced(TAG, CX, CY + 160 * S, `300 ${20 * S}px 'Jost'`, 10 * S + (1 - tg) * 6 * S, C.brass, tg * .85);
 }
 
 function drawEmbers(t, a) {
@@ -478,7 +553,7 @@ function render(t) {
     ctx.save();
     if (open < 1) { ctx.beginPath(); ctx.rect(0, CY - H * open / 2, W, H * open); ctx.clip(); }
     // câmera: mergulho no copo
-    const fx = GX - .02 * G, fy = yAt(.42);
+    const fx = GX - .15 * G, fy = yAt(.24);
     ctx.translate(fx, fy); ctx.scale(zoomB, zoomB); ctx.translate(-fx, -fy);
     drawWood(t, zoomA, Math.sin(t * .15) * 10 * S);
     // luz que passeia pela madeira, depois foca no copo

@@ -1,0 +1,578 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Abertura Choperia</title>
+<link rel="stylesheet" href="fonts.css">
+<style>
+  :root { --bg: #0b0705; --cream: #efe4d0; --brass: #d9b77e; }
+  html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; }
+  body { display: grid; place-items: center; }
+  canvas { display: block; max-width: 100vw; max-height: 100vh; }
+  #play {
+    position: fixed; inset: 0; display: grid; place-items: center; cursor: pointer;
+    background: var(--bg); color: var(--brass);
+    font: 300 14px/1 'Jost', sans-serif; letter-spacing: .5em; text-transform: uppercase;
+  }
+  #play span { border-top: 1px solid #c8102e; padding-top: 18px; }
+  body.render #play { display: none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="play"><span>assistir abertura</span></div>
+<audio id="trilha" src="trilha.m4a" preload="auto"></audio>
+<script>
+// ─────────────────────────────────────────────────────────────
+//  Abertura cinemática — Choperia
+//  Tudo é procedural: madeira, chope, espuma, bolhas e brasas.
+//  Parâmetros de URL: ?nome=CHOPERIA&tag=MADEIRA · MALTE · MOMENTO&w=1920&h=1080
+// ─────────────────────────────────────────────────────────────
+const Q = new URLSearchParams(location.search);
+const NAME = (Q.get('nome') || 'CHOPERIA').toUpperCase();
+const TAG = (Q.get('tag') || 'MADEIRA · MALTE · MOMENTO').toUpperCase();
+const W = +Q.get('w') || 1920, H = +Q.get('h') || 1080;
+const DUR = 24;
+const S = Math.min(W, H) / 1080;          // escala de layout
+const CX = W / 2, CY = H / 2;
+
+const C = {
+  red: '#c8102e', cream: '#efe4d0', brass: '#d9b77e',
+  woodLight: [78, 46, 27], woodDark: [30, 17, 10],
+};
+
+const cv = document.getElementById('c');
+cv.width = W; cv.height = H;
+const ctx = cv.getContext('2d');
+
+// ── utilidades ──────────────────────────────────────────────
+const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
+const seg = (t, a, b) => clamp((t - a) / (b - a));
+const lerp = (a, b, k) => a + (b - a) * k;
+const eOut = k => 1 - Math.pow(1 - k, 3);
+const eIn = k => k * k * k;
+const eIO = k => k < .5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2;
+const sstep = (a, b, x) => { const k = clamp((x - a) / (b - a)); return k * k * (3 - 2 * k); };
+// janela: entra em [a,b], sai em [c,d]
+const win = (t, a, b, c, d) => eOut(seg(t, a, b)) * (1 - eIO(seg(t, c, d)));
+
+function rng(seed) {
+  return () => {
+    seed |= 0; seed = seed + 0x6D2B79F5 | 0;
+    let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+const hash = (x, y) => {
+  let h = Math.imul(x | 0, 374761393) + Math.imul(y | 0, 668265263);
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+};
+function vnoise(x, y) {
+  const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi;
+  const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
+  const a = hash(xi, yi), b = hash(xi + 1, yi), c = hash(xi, yi + 1), d = hash(xi + 1, yi + 1);
+  return lerp(lerp(a, b, u), lerp(c, d, u), v);
+}
+const fbm = (x, y) => vnoise(x, y) * .55 + vnoise(x * 2.1, y * 2.1) * .28 + vnoise(x * 4.3, y * 4.3) * .17;
+
+function sprite(r, stops) {
+  const c = document.createElement('canvas'); c.width = c.height = r * 2;
+  const g = c.getContext('2d'), gr = g.createRadialGradient(r, r, 0, r, r, r);
+  stops.forEach(([o, col]) => gr.addColorStop(o, col));
+  g.fillStyle = gr; g.fillRect(0, 0, r * 2, r * 2);
+  return c;
+}
+
+// ── madeira procedural (gerada uma vez) ─────────────────────
+const WOOD_PAD = 1.14;
+const wood = (() => {
+  const ww = Math.ceil(W * WOOD_PAD), wh = Math.ceil(H * WOOD_PAD);
+  const c = document.createElement('canvas'); c.width = ww; c.height = wh;
+  const g = c.getContext('2d'), img = g.createImageData(ww, wh), d = img.data;
+  const ph = 230 * S, k = 1 / S, R = rng(7);
+  const planks = Array.from({ length: Math.ceil(wh / ph) + 1 }, () => ({
+    tone: .82 + R() * .3, joint: R() * ww * 1.4 + ww * .15, off: R() * 100, fq: .085 + R() * .07, amp: 50 + R() * 60,
+  }));
+  for (let y = 0; y < wh; y++) {
+    const pi = Math.floor(y / ph), p = planks[pi], v = y - pi * ph, yk = y * k;
+    for (let x = 0; x < ww; x++) {
+      const xk = x * k;
+      const warp = fbm(xk * .0009 + p.off, yk * .004 + p.off) * p.amp + fbm(xk * .004, yk * .02 + p.off) * 14
+        + fbm(xk * .02, yk * .05) * 3;
+      let ring = .5 + .5 * Math.sin((yk + warp) * p.fq * (.8 + .4 * vnoise(xk * .001, p.off)));
+      ring = Math.pow(ring, 2.2);
+      const fiber = vnoise(xk * .012 + p.off, yk * .85);
+      const pore = Math.max(0, vnoise(xk * .03, yk * 2.2 + p.off) - .72) * 2.4;
+      let m = clamp(ring * .55 + fiber * .28 + pore + (fbm(xk * .0015, yk * .008 + p.off) - .5) * .6);
+      let br = p.tone * (.9 + .2 * vnoise(xk * .0008, yk * .002 + p.off));
+      if (v < 2.2 * S) br *= .28;                       // junta entre tábuas
+      else if (v < 4.5 * S) br *= 1.12;                 // chanfro iluminado
+      if (Math.abs(x - p.joint) < 1.4 * S) br *= .5;   // emenda de topo
+      const i = (y * ww + x) * 4;
+      d[i]     = lerp(C.woodLight[0], C.woodDark[0], m) * br;
+      d[i + 1] = lerp(C.woodLight[1], C.woodDark[1], m) * br;
+      d[i + 2] = lerp(C.woodLight[2], C.woodDark[2], m) * br;
+      d[i + 3] = 255;
+    }
+  }
+  g.putImageData(img, 0, 0);
+  return c;
+})();
+
+// ── grão de filme ───────────────────────────────────────────
+const grain = (() => {
+  const n = 256, c = document.createElement('canvas'); c.width = c.height = n;
+  const g = c.getContext('2d'), img = g.createImageData(n, n), R = rng(3);
+  for (let i = 0; i < n * n * 4; i += 4) {
+    const v = R() * 255; img.data[i] = img.data[i + 1] = img.data[i + 2] = v; img.data[i + 3] = 255;
+  }
+  g.putImageData(img, 0, 0);
+  return ctx.createPattern(c, 'repeat');
+})();
+
+// ── partículas ──────────────────────────────────────────────
+const SP_DUST = sprite(32, [[0, 'rgba(255,226,180,1)'], [.25, 'rgba(255,210,150,.5)'], [1, 'rgba(255,200,140,0)']]);
+const SP_EMBER = sprite(32, [[0, 'rgba(255,236,200,1)'], [.18, 'rgba(255,120,60,.9)'], [.5, 'rgba(200,16,46,.35)'], [1, 'rgba(200,16,46,0)']]);
+const SP_BOKEH = (() => {
+  const r = 128, c = document.createElement('canvas'); c.width = c.height = r * 2;
+  const g = c.getContext('2d');
+  const gr = g.createRadialGradient(r, r, 0, r, r, r);
+  gr.addColorStop(0, 'rgba(255,196,130,.16)'); gr.addColorStop(.8, 'rgba(255,196,130,.24)');
+  gr.addColorStop(.92, 'rgba(255,222,180,.5)'); gr.addColorStop(1, 'rgba(255,222,180,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, r * 2, r * 2);
+  return c;
+})();
+
+const R1 = rng(11);
+const dust = Array.from({ length: 160 }, () => ({
+  x: R1() * W, y: R1() * H, z: .3 + R1() * .7, ph: R1() * 6.28, sp: .3 + R1(),
+}));
+const embers = Array.from({ length: 34 }, () => ({
+  x: CX + (R1() - .5) * W * .8, y0: R1(), z: .4 + R1() * .6, ph: R1() * 6.28, sp: .025 + R1() * .045,
+}));
+const bokeh = Array.from({ length: 95 }, () => ({
+  x: R1(), y0: R1(), z: R1(), ph: R1() * 6.28,
+}));
+
+// ── copo (tulipa) ───────────────────────────────────────────
+const G = 540 * S;                       // altura do copo
+const GX = CX, GY = CY - 40 * S;          // centro
+const G_TOP = GY - G / 2, G_BOT = GY + G / 2;
+const BASE = .07 * G;                    // fundo de vidro espesso
+const IN_BOT = G_BOT - BASE, IN_H = IN_BOT - G_TOP;
+const rIn = u => (0.14 + 0.125 * Math.sin(Math.min(u / .6, 1) * Math.PI / 2) - 0.028 * sstep(.6, 1, u)) * G;
+const yAt = u => IN_BOT - u * IN_H;
+const WALL = 7 * S;
+
+const outline = (() => {
+  const pts = [], N = 60;
+  for (let i = N; i >= 0; i--) { const u = i / N; pts.push([GX - rIn(u) - WALL, yAt(u)]); }
+  const rb = rIn(0) + WALL;
+  pts.push([GX - rb, G_BOT - 6 * S], [GX - rb + 6 * S, G_BOT], [GX + rb - 6 * S, G_BOT], [GX + rb, G_BOT - 6 * S]);
+  for (let i = 0; i <= N; i++) { const u = i / N; pts.push([GX + rIn(u) + WALL, yAt(u)]); }
+  let len = 0;
+  for (let i = 1; i < pts.length; i++) len += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+  return { pts, len };
+})();
+
+function interiorPath(c) {
+  c.beginPath();
+  for (let i = 0; i <= 60; i++) { const u = i / 60; c.lineTo(GX - rIn(u), yAt(u)); }
+  for (let i = 60; i >= 0; i--) { const u = i / 60; c.lineTo(GX + rIn(u), yAt(u)); }
+  c.closePath();
+}
+
+const R2 = rng(23);
+const glassBubbles = Array.from({ length: 90 }, () => ({
+  x: R2() * 2 - 1, ph: R2(), sp: .05 + R2() * .12, r: (1 + R2() * 2.4) * S, wob: R2() * 6.28,
+}));
+
+// ── texto ───────────────────────────────────────────────────
+function spaced(text, x, y, font, spacing, color, alpha = 1, perLetter) {
+  ctx.save();
+  ctx.font = font; ctx.fillStyle = color; ctx.textBaseline = 'middle';
+  const ws = [...text].map(ch => ctx.measureText(ch).width);
+  const total = ws.reduce((a, b) => a + b, 0) + spacing * (ws.length - 1);
+  let px = x - total / 2;
+  [...text].forEach((ch, i) => {
+    const pl = perLetter ? perLetter(i, ws.length) : { a: 1, dy: 0 };
+    ctx.globalAlpha = alpha * pl.a;
+    ctx.fillText(ch, px, y + (pl.dy || 0));
+    px += ws[i] + spacing;
+  });
+  ctx.restore();
+  return total;
+}
+
+// palavra-capítulo editorial: numeral + palavra em itálico
+function chapter(t, a, b, numeral, word, y, color = C.cream) {
+  const k = win(t, a, a + 1.1, b - .7, b);
+  if (k <= 0) return;
+  const reveal = eOut(seg(t, a, a + 1.6));
+  ctx.save();
+  ctx.filter = `blur(${(1 - reveal) * 10 * S}px)`;
+  spaced(word, CX, y - (1 - reveal) * 10 * S, `italic 300 ${104 * S}px 'Cormorant Garamond'`,
+    lerp(26, 4, reveal) * S, color, k);
+  ctx.filter = 'none';
+  spaced(numeral, CX, y - 92 * S, `400 ${18 * S}px 'Jost'`, 7 * S, C.brass, k);
+  ctx.restore();
+}
+
+// ── luz ─────────────────────────────────────────────────────
+function lightPool(x, y, r, dark) {
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, 'rgba(6,3,2,0)'); g.addColorStop(.55, `rgba(6,3,2,${dark * .55})`); g.addColorStop(1, `rgba(6,3,2,${dark})`);
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+}
+function warmGlow(x, y, r, a) {
+  ctx.save(); ctx.globalCompositeOperation = 'soft-light';
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, `rgba(255,190,110,${a})`); g.addColorStop(1, 'rgba(255,190,110,0)');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H); ctx.restore();
+}
+function drawWood(t, zoom = 1, ox = 0) {
+  const ww = wood.width * zoom, wh = wood.height * zoom;
+  ctx.drawImage(wood, CX - ww / 2 + ox, CY - wh / 2, ww, wh);
+}
+
+// ── atos ────────────────────────────────────────────────────
+function drawDust(t, alpha, beam) {
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  for (const p of dust) {
+    const x = (p.x + t * 9 * p.sp * S + Math.sin(t * .4 * p.sp + p.ph) * 30 * S) % W;
+    const y = (p.y - t * 6 * p.sp * S + H * 4) % H;
+    // feixe de luz diagonal vindo do alto à esquerda
+    const d = beam ? Math.abs((x - W * .32) * .6 - (y) * .35 + H * .05) / (W * .22) : 0;
+    const inBeam = beam ? Math.exp(-d * d * 2.2) : 1;
+    const tw = .55 + .45 * Math.sin(t * 1.3 * p.sp + p.ph);
+    const a = alpha * inBeam * tw * p.z;
+    if (a < .01) continue;
+    const r = (1.2 + p.z * 3.2) * S * 4;
+    ctx.globalAlpha = a; ctx.drawImage(SP_DUST, x - r, y - r, r * 2, r * 2);
+  }
+  ctx.restore();
+}
+
+function drawBeam(alpha) {
+  if (alpha <= 0) return;
+  ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = alpha;
+  ctx.translate(W * .3, -H * .1); ctx.rotate(-.55);
+  const g = ctx.createLinearGradient(-W * .16, 0, W * .16, 0);
+  g.addColorStop(0, 'rgba(255,200,140,0)'); g.addColorStop(.5, 'rgba(255,200,140,.07)'); g.addColorStop(1, 'rgba(255,200,140,0)');
+  ctx.fillStyle = g; ctx.fillRect(-W * .16, 0, W * .32, H * 2.2);
+  ctx.restore();
+}
+
+// fio vermelho: a cor da casa, usada com parcimônia, como um traço de brasa
+function redThread(x, y, half, alpha, glow = 1) {
+  if (alpha <= 0 || half <= 0) return;
+  ctx.save();
+  const g = ctx.createLinearGradient(x - half, 0, x + half, 0);
+  g.addColorStop(0, 'rgba(200,16,46,0)'); g.addColorStop(.18, C.red); g.addColorStop(.82, C.red); g.addColorStop(1, 'rgba(200,16,46,0)');
+  ctx.globalAlpha = alpha; ctx.fillStyle = g;
+  ctx.shadowColor = 'rgba(255,60,40,.9)'; ctx.shadowBlur = 14 * S * glow;
+  ctx.fillRect(x - half, y - 1.1 * S, half * 2, 2.2 * S);
+  ctx.restore();
+}
+
+function drawGlass(t) {
+  const draw = eIO(seg(t, 7.4, 9.2));
+  const fill = eOut(seg(t, 9.0, 11.9)) * .76;
+  const foam = eOut(seg(t, 10.4, 12.6)) * .17;
+
+  // líquido + espuma
+  if (fill > 0) {
+    ctx.save(); interiorPath(ctx); ctx.clip();
+    const wave = (1 - seg(t, 11, 13.2)) * 5 * S + 1.2 * S;
+    const ySurf = yAt(fill);
+    const lg = ctx.createLinearGradient(0, IN_BOT, 0, yAt(.8));
+    lg.addColorStop(0, '#7a3c0c'); lg.addColorStop(.45, '#c97a1c'); lg.addColorStop(1, '#f1b84a');
+    ctx.fillStyle = lg;
+    ctx.beginPath(); ctx.moveTo(GX - G, IN_BOT + 2);
+    for (let x = -G * .45; x <= G * .45; x += 6 * S) ctx.lineTo(GX + x, ySurf + Math.sin(x * .025 / S + t * 4) * wave);
+    ctx.lineTo(GX + G, IN_BOT + 2); ctx.closePath(); ctx.fill();
+    // brilho interno (luz atravessando o chope)
+    const hg = ctx.createRadialGradient(GX - .05 * G, yAt(.35), 0, GX, yAt(.35), G * .45);
+    hg.addColorStop(0, 'rgba(255,220,140,.55)'); hg.addColorStop(1, 'rgba(255,220,140,0)');
+    ctx.globalCompositeOperation = 'lighter'; ctx.fillStyle = hg; ctx.fillRect(GX - G, G_TOP, G * 2, G);
+    // bolhas
+    const ba = seg(t, 9.4, 10.4);
+    ctx.fillStyle = 'rgba(255,240,200,.55)';
+    for (const b of glassBubbles) {
+      const u = ((b.ph + t * b.sp) % 1) * fill;
+      const y = yAt(u), x = GX + b.x * rIn(u) * .86 + Math.sin(t * 3 + b.wob) * 2 * S;
+      if (y < ySurf + 4 * S) continue;
+      ctx.globalAlpha = ba * .8; ctx.beginPath(); ctx.arc(x, y, b.r, 0, 6.283); ctx.fill();
+    }
+    ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+    // espuma (colarinho)
+    if (foam > 0) {
+      const yF0 = ySurf + 2 * S, yF1 = yAt(fill + foam);
+      const fg = ctx.createLinearGradient(0, yF0, 0, yF1);
+      fg.addColorStop(0, '#d9c49c'); fg.addColorStop(.35, '#f1e6cf'); fg.addColorStop(1, '#fbf5e8');
+      ctx.fillStyle = fg;
+      ctx.beginPath(); ctx.moveTo(GX - G, yF0 + 6 * S);
+      for (let x = -G * .45; x <= G * .45; x += 5 * S) ctx.lineTo(GX + x, yF0 + Math.sin(x * .05 / S + t * 2) * 2 * S);
+      ctx.lineTo(GX + G, yF0 + 6 * S); ctx.lineTo(GX + G, yF1); ctx.lineTo(GX - G, yF1); ctx.closePath(); ctx.fill();
+      // topo levemente abaulado
+      const rr = rIn(fill + foam);
+      ctx.beginPath(); ctx.ellipse(GX, yF1 + 1, rr, 9 * S * (foam / .17), 0, Math.PI, 0); ctx.fill();
+      // textura de microbolhas
+      const R = rng(5); ctx.fillStyle = 'rgba(190,160,110,.25)';
+      for (let i = 0; i < 140; i++) {
+        const u = fill + R() * foam, xx = GX + (R() * 2 - 1) * rIn(u) * .95, yy = yAt(u);
+        ctx.beginPath(); ctx.arc(xx, yy, (.6 + R() * 1.6) * S, 0, 6.283); ctx.fill();
+      }
+    }
+    ctx.restore();
+  }
+
+  // filete de chope caindo
+  const pourOn = seg(t, 8.9, 9.25), pourOff = eIn(seg(t, 11.5, 12.1));
+  if (pourOn > 0 && pourOff < 1) {
+    const ySurf = yAt(Math.max(fill, .01));
+    const top = lerp(-20, ySurf, pourOff), bot = lerp(-20, ySurf, pourOn);
+    const px = GX - .06 * G;
+    const sg = ctx.createLinearGradient(0, top, 0, bot);
+    sg.addColorStop(0, 'rgba(241,184,74,.2)'); sg.addColorStop(.4, 'rgba(230,160,50,.95)'); sg.addColorStop(1, 'rgba(245,200,110,.95)');
+    ctx.fillStyle = sg; ctx.beginPath();
+    for (let y = top; y <= bot; y += 8) ctx.lineTo(px + Math.sin(y * .02 + t * 9) * 1.4 * S - 3.5 * S, y);
+    for (let y = bot; y >= top; y -= 8) ctx.lineTo(px + Math.sin(y * .02 + t * 9) * 1.4 * S + 3.5 * S, y);
+    ctx.fill();
+  }
+
+  // contorno em latão, desenhado como um traço de pena
+  if (draw > 0) {
+    ctx.save();
+    ctx.strokeStyle = C.brass; ctx.lineWidth = 2 * S; ctx.lineJoin = ctx.lineCap = 'round';
+    ctx.shadowColor = 'rgba(217,183,126,.6)'; ctx.shadowBlur = 8 * S;
+    ctx.setLineDash([outline.len * draw, outline.len]);
+    ctx.beginPath(); outline.pts.forEach(([x, y]) => ctx.lineTo(x, y)); ctx.stroke();
+    ctx.setLineDash([]);
+    // reflexo vertical do vidro
+    const ra = seg(t, 9, 10) * .5;
+    if (ra > 0) {
+      ctx.globalAlpha = ra; ctx.strokeStyle = '#fff3dc'; ctx.lineWidth = 3 * S; ctx.shadowBlur = 0;
+      ctx.beginPath();
+      for (let u = .18; u <= .7; u += .02) ctx.lineTo(GX - rIn(u) + 16 * S, yAt(u));
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+}
+
+function drawBokeh(t, a) {
+  if (a <= 0) return;
+  const bg = ctx.createLinearGradient(0, 0, 0, H);
+  bg.addColorStop(0, '#d9932e'); bg.addColorStop(.5, '#a85b14'); bg.addColorStop(1, '#4a1f06');
+  ctx.globalAlpha = a; ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
+  const hg = ctx.createRadialGradient(CX, CY * .8, 0, CX, CY, Math.max(W, H) * .6);
+  hg.addColorStop(0, 'rgba(255,200,120,.32)'); hg.addColorStop(1, 'rgba(255,200,120,0)');
+  ctx.globalCompositeOperation = 'screen'; ctx.fillStyle = hg; ctx.fillRect(0, 0, W, H);
+  for (const b of bokeh) {
+    const sz = (10 + b.z * b.z * 120) * S;
+    const sp = (.04 + b.z * .11);
+    const y = ((b.y0 - (t - 13) * sp) % 1 + 1) % 1 * (H + sz * 2) - sz;
+    const x = b.x * W + Math.sin(t * .8 + b.ph) * 14 * S * b.z;
+    ctx.globalAlpha = a * (.25 + b.z * .5);
+    ctx.filter = b.z > .75 ? `blur(${(b.z - .75) * 24 * S}px)` : 'none';
+    ctx.drawImage(SP_BOKEH, x - sz, y - sz, sz * 2, sz * 2);
+  }
+  ctx.filter = 'none'; ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
+  // penumbra central para o texto respirar
+  const dg = ctx.createRadialGradient(CX, CY, 0, CX, CY, 420 * S);
+  dg.addColorStop(0, `rgba(40,16,4,${.5 * a})`); dg.addColorStop(1, 'rgba(40,16,4,0)');
+  ctx.fillStyle = dg; ctx.fillRect(0, 0, W, H);
+}
+
+const nameCanvas = document.createElement('canvas'); nameCanvas.width = W; nameCanvas.height = H;
+const nctx = nameCanvas.getContext('2d');
+
+function drawLogo(t) {
+  const ringY = CY - 175 * S, ringR = 82 * S;
+  // anel de latão
+  const ring = eIO(seg(t, 18.9, 20.4));
+  if (ring > 0) {
+    ctx.save(); ctx.strokeStyle = C.brass; ctx.lineWidth = 1.5 * S; ctx.globalAlpha = .9;
+    ctx.beginPath(); ctx.arc(CX, ringY, ringR, -Math.PI / 2, -Math.PI / 2 + ring * Math.PI * 2); ctx.stroke();
+    ctx.globalAlpha = .45 * ring;
+    ctx.beginPath(); ctx.arc(CX, ringY, ringR - 7 * S, 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+  }
+  // monograma
+  const mono = eOut(seg(t, 19.7, 21));
+  if (mono > 0) {
+    ctx.save(); ctx.filter = `blur(${(1 - mono) * 8 * S}px)`;
+    spaced(NAME[0], CX, ringY + 4 * S, `italic 300 ${118 * S}px 'Cormorant Garamond'`, 0, C.cream, mono);
+    ctx.restore();
+  }
+  // nome — letra a letra, com o espaçamento se assentando
+  const nk = seg(t, 19.4, 21.6);
+  if (nk > 0) {
+    nctx.clearRect(0, 0, W, H);
+    nctx.save();
+    nctx.font = `500 ${112 * S}px 'Cormorant Garamond'`; nctx.textBaseline = 'middle'; nctx.fillStyle = C.cream;
+    const chars = [...NAME], sp = lerp(52, 34, eOut(nk)) * S;
+    const ws = chars.map(ch => nctx.measureText(ch).width);
+    const total = ws.reduce((a, b) => a + b, 0) + sp * (chars.length - 1);
+    let px = CX - total / 2;
+    chars.forEach((ch, i) => {
+      const li = eOut(clamp((nk * (chars.length + 4) - i) / 5));
+      nctx.globalAlpha = li; nctx.fillText(ch, px, CY + 20 * S + (1 - li) * 18 * S);
+      px += ws[i] + sp;
+    });
+    // brilho que atravessa o nome
+    const sh = seg(t, 21.9, 23.1);
+    if (sh > 0 && sh < 1) {
+      nctx.globalCompositeOperation = 'source-atop'; nctx.globalAlpha = 1;
+      const sx = lerp(CX - total, CX + total, eIO(sh));
+      const g = nctx.createLinearGradient(sx - 120 * S, 0, sx + 120 * S, 0);
+      g.addColorStop(0, 'rgba(255,214,150,0)'); g.addColorStop(.5, 'rgba(255,214,150,1)'); g.addColorStop(1, 'rgba(255,214,150,0)');
+      nctx.fillStyle = g; nctx.fillRect(0, 0, W, H);
+    }
+    nctx.restore();
+    ctx.drawImage(nameCanvas, 0, 0);
+  }
+  // fio vermelho sob o nome
+  const th = eIO(seg(t, 20.7, 22));
+  redThread(CX, CY + 102 * S, th * 230 * S, th, 1);
+  // assinatura
+  const tg = eOut(seg(t, 21.4, 22.6));
+  if (tg > 0) spaced(TAG, CX, CY + 160 * S, `300 ${22 * S}px 'Jost'`, 10 * S + (1 - tg) * 6 * S, C.brass, tg);
+}
+
+function drawEmbers(t, a) {
+  if (a <= 0) return;
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  for (const e of embers) {
+    const life = ((e.y0 + t * e.sp) % 1);
+    const y = H * (1.05 - life * .75);
+    const x = e.x + Math.sin(t * .9 + e.ph) * 24 * S + life * 30 * S;
+    const fl = .6 + .4 * Math.sin(t * 7 * e.z + e.ph * 3);
+    const r = (5 + e.z * 6) * S;
+    ctx.globalAlpha = a * fl * Math.sin(life * Math.PI) * e.z * .9;
+    ctx.drawImage(SP_EMBER, x - r, y - r, r * 2, r * 2);
+  }
+  ctx.restore();
+}
+
+// ── quadro ──────────────────────────────────────────────────
+function render(t) {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over'; ctx.filter = 'none';
+  ctx.fillStyle = '#080504'; ctx.fillRect(0, 0, W, H);
+
+  // I. Prelúdio — escuridão, poeira dourada num feixe, o fio vermelho nasce
+  const pre = 1 - seg(t, 4.2, 5.5);
+  drawBeam(seg(t, .2, 2.4) * pre);
+  drawDust(t, seg(t, .2, 2.2) * .9, true);
+
+  // II. Madeira — a fenda se abre a partir do fio
+  const open = eIO(seg(t, 3.0, 5.2));
+  if (t < 18.6 && open > 0) {
+    const zoomA = lerp(1.08, 1.0, eOut(seg(t, 3, 9)));
+    const zoomB = 1 + eIn(seg(t, 13.0, 15.1)) * 11;
+    ctx.save();
+    if (open < 1) { ctx.beginPath(); ctx.rect(0, CY - H * open / 2, W, H * open); ctx.clip(); }
+    // câmera: mergulho no copo
+    const fx = GX - .02 * G, fy = yAt(.42);
+    ctx.translate(fx, fy); ctx.scale(zoomB, zoomB); ctx.translate(-fx, -fy);
+    drawWood(t, zoomA, Math.sin(t * .15) * 10 * S);
+    // luz que passeia pela madeira, depois foca no copo
+    const sweep = eIO(seg(t, 3.2, 7.6));
+    const lx = lerp(W * .15, CX, sweep), ly = lerp(CY - H * .1, GY, seg(t, 6, 9));
+    const focus = seg(t, 7, 9);
+    lightPool(lx, ly, lerp(W * .62, W * .4, focus), lerp(.82, .9, focus));
+    warmGlow(lx, ly, W * .35, .55);
+    drawGlass(t);
+    ctx.restore();
+    // bordas da fenda: o fio se divide em dois
+    if (open < 1) {
+      const ea = 1 - open;
+      redThread(CX, CY - H * open / 2, W * .5, ea);
+      redThread(CX, CY + H * open / 2, W * .5, ea);
+    }
+  }
+
+  // fio vermelho nascendo (antes da abertura)
+  if (t < 3.05) {
+    const g = eIO(seg(t, .9, 2.9));
+    redThread(CX, CY, g * W * .5, seg(t, .9, 1.3));
+    if (g > 0 && g < 1) { // brasa na ponta
+      ctx.save(); ctx.globalCompositeOperation = 'lighter';
+      const r = 26 * S;
+      [-1, 1].forEach(s => ctx.drawImage(SP_EMBER, CX + s * g * W * .42 - r, CY - r, r * 2, r * 2));
+      ctx.restore();
+    }
+  }
+
+  chapter(t, 4.4, 7.3, 'I', 'madeira', CY);
+  chapter(t, 9.6, 13.0, 'II', 'malte', GY + G / 2 + 130 * S);
+
+  // III. Momento — dentro do chope, o mundo vira bolha e luz
+  const bk = seg(t, 14.2, 15.0) * (1 - seg(t, 17.6, 18.9));
+  if (bk > 0 && t < 19) drawBokeh(t, bk);
+  if (t > 14 && t < 19) {
+    ctx.fillStyle = `rgba(8,5,4,${eIO(seg(t, 17.6, 18.9))})`; ctx.fillRect(0, 0, W, H);
+  }
+  chapter(t, 15.2, 18.0, 'III', 'momento', CY, '#fff7e8');
+
+  // IV. Assinatura — madeira em penumbra, a casa se apresenta
+  if (t >= 18.4) {
+    const a = eOut(seg(t, 18.4, 20));
+    ctx.save(); ctx.globalAlpha = a;
+    drawWood(t, lerp(1.06, 1.0, eOut(seg(t, 18.4, 24))));
+    lightPool(CX, CY - 60 * S, Math.max(W, H) * .5, .93);
+    warmGlow(CX, CY - 120 * S, W * .3, .5);
+    ctx.restore();
+    drawEmbers(t, seg(t, 19, 20.5));
+    drawDust(t, seg(t, 19.5, 21) * .45, false);
+    drawLogo(t);
+  }
+
+  // acabamento: vinheta + grão de filme + fade final
+  const vg = ctx.createRadialGradient(CX, CY, Math.min(W, H) * .35, CX, CY, Math.hypot(W, H) * .6);
+  vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(0,0,0,.6)');
+  ctx.fillStyle = vg; ctx.fillRect(0, 0, W, H);
+  ctx.save(); ctx.globalCompositeOperation = 'overlay'; ctx.globalAlpha = .07;
+  const f = Math.floor(t * 30);
+  ctx.translate((hash(f, 1) * 256) | 0, (hash(f, 2) * 256) | 0);
+  ctx.fillStyle = grain; ctx.fillRect(-256, -256, W + 512, H + 512);
+  ctx.restore();
+  const fade = Math.max(1 - seg(t, 0, .6), seg(t, 23.2, 24));
+  if (fade > 0) { ctx.fillStyle = `rgba(0,0,0,${fade})`; ctx.fillRect(0, 0, W, H); }
+}
+
+// ── execução ────────────────────────────────────────────────
+window.DUR = DUR;
+window.render = render;
+window.ready = document.fonts.load(`500 40px 'Cormorant Garamond'`)
+  .then(() => Promise.all([
+    document.fonts.load(`italic 300 40px 'Cormorant Garamond'`),
+    document.fonts.load(`300 40px 'Jost'`), document.fonts.load(`400 40px 'Jost'`),
+  ])).then(() => document.fonts.ready);
+
+if (Q.has('render')) {
+  document.body.classList.add('render');
+} else {
+  const audio = document.getElementById('trilha');
+  let t0 = null;
+  window.ready.then(() => render(0));
+  const loop = now => {
+    const t = audio.currentTime > 0 && !audio.paused ? audio.currentTime : (now - t0) / 1000;
+    render(Math.min(t, DUR));
+    if (t < DUR) requestAnimationFrame(loop);
+    else document.getElementById('play').style.display = '';
+  };
+  document.getElementById('play').addEventListener('click', e => {
+    e.currentTarget.style.display = 'none';
+    audio.currentTime = 0; audio.play().catch(() => {});
+    t0 = performance.now(); requestAnimationFrame(loop);
+  });
+}
+</script>
+</body>
+</html>

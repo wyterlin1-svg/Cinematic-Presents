@@ -194,8 +194,13 @@ const beerVert = `
   }`;
 const beerFrag = `
   uniform float uTime; uniform float uGlow; uniform float uBubbles; uniform float uLevel;
+  uniform float uPour; uniform float uPourX; uniform float uSurf;
   varying vec3 vN; varying vec3 vV; varying vec3 vL; varying vec3 vW;
   float h1(float n){ return fract(sin(n*127.1)*43758.5453); }
+  float h2(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
+  float n2(vec2 p){ vec2 i = floor(p), f = fract(p); f = f*f*(3.-2.*f);
+    return mix(mix(h2(i), h2(i+vec2(1,0)), f.x), mix(h2(i+vec2(0,1)), h2(i+vec2(1,1)), f.x), f.y); }
+  float fbm(vec2 p){ return n2(p)*.55 + n2(p*2.03+7.1)*.28 + n2(p*4.1+3.3)*.17; }
   void main(){
     float f = clamp(abs(dot(normalize(vN), normalize(vV))), 0., 1.);
     vec3 deep = vec3(.11,.02,.002), gold = vec3(.62,.21,.018), hot = vec3(.98,.52,.12);
@@ -203,6 +208,17 @@ const beerFrag = `
     col = mix(col, hot, pow(f, 9.) * .45);
     float hy = abs(vW.y);
     col *= mix(.55, 1.12, clamp((hy - .02) / max(uLevel, .02), 0., 1.));
+    // ar arrastado pelo filete: uma pluma turva e agitada que desce do ponto de impacto
+    if (uPour > 0.) {
+      float dx = (vW.x - uPourX) / .01;
+      float depth = clamp((uSurf - hy) / .075, 0., 1.);
+      float tn = fbm(vec2(vW.x * 420. + sin(hy * 300. + uTime * 7.) * .8, hy * 260. + uTime * 9.));
+      float plume = uPour * exp(-dx * dx * (1. + depth * 1.5)) * (1. - depth) * smoothstep(-.002, .004, uSurf - hy);
+      col = mix(col, vec3(.85, .52, .2) * (.75 + .5 * tn), clamp(plume * (.2 + .45 * tn), 0., .45));
+      // espuma nascendo junto à superfície
+      float rim = smoothstep(.012, 0., uSurf - hy) * uPour;
+      col = mix(col, vec3(.95, .82, .62) * (.8 + .3 * fbm(vec2(vW.x * 900., uTime * 3.))), rim * .3);
+    }
     // borbulhas: colunas finas subindo pela parede
     if (abs(vN.y) < .5) {
       float ang = atan(vL.z, vL.x);
@@ -226,7 +242,8 @@ const beerFrag = `
     #include <colorspace_fragment>
   }`;
 const beerMat = new THREE.ShaderMaterial({
-  uniforms: { uTime: { value: 0 }, uGlow: { value: 1 }, uBubbles: { value: 0 }, uLevel: { value: .1 } },
+  uniforms: { uTime: { value: 0 }, uGlow: { value: 1 }, uBubbles: { value: 0 }, uLevel: { value: .1 },
+    uPour: { value: 0 }, uPourX: { value: -.011 }, uSurf: { value: 0 } },
   vertexShader: beerVert, fragmentShader: beerFrag, side: THREE.DoubleSide,
 });
 const beerGeo = new THREE.CylinderGeometry(R_IN - .0012, R_IN - .0012, 1, 128, 1);
@@ -270,26 +287,87 @@ const foamGeo = (() => {
 const foam = new THREE.Mesh(foamGeo, foamMat);
 mug.add(foam);
 
-// filete de chopp caindo da torneira
+// filete de chopp caindo da torneira: afina ao acelerar, ondula, torce e reflete as réguas de luz
+const POUR_X = -.011;
+const streamNoise = `
+  float h(float n){ return fract(sin(n)*43758.5453); }
+  float n1(float x){ float i = floor(x), f = fract(x); f = f*f*(3.-2.*f); return mix(h(i), h(i+1.), f); }`;
 const pourMat = new THREE.ShaderMaterial({
-  uniforms: { uTime: { value: 0 }, uGlow: { value: 1.3 }, uBubbles: { value: 0 }, uLevel: { value: 1 } },
+  uniforms: { uTime: { value: 0 }, uX: { value: POUR_X }, uBot: { value: 0 } },
   vertexShader: `
-    uniform float uTime; varying vec3 vN; varying vec3 vV; varying vec3 vL; varying vec3 vW;
+    uniform float uTime; uniform float uX; uniform float uBot;
+    varying vec3 vN; varying vec3 vV; varying vec3 vW; varying float vFlow; varying float vAng;
+    ${streamNoise}
     void main(){
-      vec3 p = position;
-      p.x += sin(p.y * 90. + uTime * 23.) * .0006 + sin(p.y * 31. - uTime * 9.) * .0004;
-      p.z += cos(p.y * 70. + uTime * 17.) * .0005;
-      vec4 wp = modelMatrix * vec4(p,1.);
-      vW = wp.xyz; vL = p; vN = normalize(mat3(modelMatrix) * normal);
+      vec4 wp = modelMatrix * vec4(position, 1.);
+      vec2 rd = position.xz;                              // eixo local do filete
+      float r = length(rd); vec2 dir = rd / max(r, 1e-6);
+      float flow = wp.y + uTime * 1.6;                     // o padrão desce a ~1,6 m/s
+      float bulge = (n1(flow * 38.) - .5) * .16 + (n1(flow * 110. + 3.) - .5) * .05;
+      float fall = clamp((.75 - wp.y) / .7, 0., 1.);
+      r *= (1. - .3 * fall) * (1. + bulge);                // afina enquanto acelera
+      float tw = flow * 30.;                               // leve torção, como corda
+      vec2 wob = vec2(sin(wp.y * 14. + uTime * 4.), cos(wp.y * 11. - uTime * 3.)) * .0005 * fall;
+      wp.xz = vec2(uX, 0.) + dir * r + wob;
+      vW = wp.xyz; vFlow = flow; vAng = atan(dir.y, dir.x) + tw * .15;
+      vN = normalize(vec3(dir.x, -bulge * .4, dir.y));
       vV = normalize(cameraPosition - wp.xyz);
       gl_Position = projectionMatrix * viewMatrix * wp;
     }`,
-  fragmentShader: beerFrag,
+  fragmentShader: `
+    varying vec3 vN; varying vec3 vV; varying vec3 vW; varying float vFlow; varying float vAng;
+    ${streamNoise}
+    void main(){
+      vec3 N = normalize(vN), V = normalize(vV);
+      float f = clamp(abs(dot(N, V)), 0., 1.);
+      vec3 deep = vec3(.05,.008,0.), gold = vec3(.55,.14,.004), hot = vec3(1.,.38,.03);
+      vec3 col = mix(deep, gold, smoothstep(0., .55, f));
+      col = mix(col, hot, pow(f, 3.) * .8);
+      // estrias de fluxo correndo para baixo
+      float st = n1(vAng * 5. + 11.) * .6 + n1(vFlow * 45. + vAng * 3.) * .4;
+      col *= .85 + .3 * st;
+      // filetes de luz da régua principal, fixos na tela, como numa foto de estúdio
+      vec3 Nv = normalize((viewMatrix * vec4(N, 0.)).xyz);
+      float band = exp(-pow((Nv.x - .5) / .13, 2.)) * (.65 + .35 * n1(vFlow * 90.));
+      float band2 = exp(-pow((Nv.x + .62) / .1, 2.)) * .5;
+      col += (band * 3. + band2) * vec3(1., .94, .82);
+      // reflexos das duas réguas de luz do estúdio
+      vec3 Rf = reflect(-V, N);
+      float s1 = pow(max(dot(Rf, normalize(vec3(-.9, .2, .45))), 0.), 70.);
+      float s2 = pow(max(dot(Rf, normalize(vec3(.92, .2, .5))), 0.), 90.);
+      float flick = .55 + .45 * n1(vFlow * 140. + vAng * 2.);
+      col += (s1 * 2.2 + s2 * 1.4) * vec3(1., .96, .88) * flick;
+      col += pow(1. - f, 3.) * vec3(.4, .2, .06);
+      gl_FragColor = vec4(col, 1.);
+      #include <tonemapping_fragment>
+      #include <colorspace_fragment>
+    }`,
 });
-const pourGeo = new THREE.CylinderGeometry(.0034, .0042, 1, 32, 60, true);
+const pourGeo = new THREE.CylinderGeometry(.0042, .0042, 1, 40, 220, true);
 pourGeo.translate(0, .5, 0);
 const pour = new THREE.Mesh(pourGeo, pourMat);
-pour.position.x = -.011; scene.add(pour);
+scene.add(pour);
+
+// respingos no impacto: gotinhas de chopp e de espuma que saltam e caem
+const SPLASH = 46;
+const splash = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 10, 8),
+  new THREE.MeshStandardMaterial({ color: 0xd9a04a, roughness: .12, emissive: new THREE.Color('#4a2206'), emissiveIntensity: .6 }), SPLASH);
+const splashData = (() => { const R = rng(77); return Array.from({ length: SPLASH }, () => ({
+  per: .28 + R() * .35, ph: R(), vy: .22 + R() * .3, vh: .04 + R() * .11, a: R() * 6.283, r: .0005 + R() * .0011 })); })();
+scene.add(splash);
+const PZ = new THREE.Vector3(), PS = new THREE.Vector3(), PQ = new THREE.Quaternion(), PM = new THREE.Matrix4();
+function updateSplash(t, active, surf) {
+  splashData.forEach((d, i) => {
+    const tau = ((t / d.per + d.ph) % 1) * d.per;
+    let y = surf + d.vy * tau - 4.9 * tau * tau, r = d.r * (1 - tau / d.per * .5);
+    const hr = d.vh * tau;
+    if (!active || y < surf) r = 1e-6, y = surf;
+    PZ.set(POUR_X + Math.cos(d.a) * hr, y, Math.sin(d.a) * hr);
+    PS.set(r, r * 1.15, r);
+    splash.setMatrixAt(i, PM.compose(PZ, PQ, PS));
+  });
+  splash.instanceMatrix.needsUpdate = true;
+}
 
 // condensação: gotas que se formam no vidro gelado
 const dropData = (() => {
@@ -375,11 +453,19 @@ function setLiquid(t) {
 
   // filete
   const on = seg(t, 5.6, 5.95), off = eIn(seg(t, 11.0, 11.6));
-  const surf = BASE + level + fh * .6;
+  const surf = BASE + level + fh * .55;
   const top = lerp(.75, surf, off), bot = lerp(.75, surf, on);
   pour.visible = on > 0 && off < 1 && top - bot > .001;
   pour.position.y = bot; pour.scale.y = Math.max(.001, top - bot);
   pourMat.uniforms.uTime.value = t;
+  const pouring = on * (1 - off);
+  beerMat.uniforms.uPour.value = pouring * (1 - .5 * seg(t, 9, 11)) + .25 * seg(t, 11, 11.6) * (1 - seg(t, 11.6, 13));
+  beerMat.uniforms.uPourX.value = POUR_X;
+  beerMat.uniforms.uSurf.value = BASE + level;
+  updateSplash(t, pouring > .5 && on >= 1, surf);
+  // espuma viva enquanto o chopp entra, assentando depois
+  foamTex.offset.set(t * .015 * (pouring + .15), -t * .04 * pouring);
+  foam.rotation.y = foamR.rotation.y = Math.sin(t * .9) * .05 * pouring;
 
   // gelo: condensação e névoa
   const cold = seg(t, 9.5, 15);
@@ -513,13 +599,59 @@ function drawLogo(t) {
   redThread(CX + off, LOGO_Y + 78 * S, half, th);
 }
 
-function word(t, a, b, text, y) {
-  const k = win(t, a, a + 1.1, b - .7, b);
-  if (k <= 0) return;
-  const reveal = eOut(seg(t, a, a + 1.6));
-  ctx.save(); ctx.filter = `blur(${(1 - reveal) * 10 * S}px)`;
-  ctx.shadowColor = 'rgba(0,0,0,.7)'; ctx.shadowBlur = 24 * S;
-  spaced(text, CX, y - (1 - reveal) * 10 * S, `italic 300 ${104 * S}px 'Cormorant Garamond'`, lerp(26, 4, reveal) * S, '#fff7e8', k);
+// "momento" em partículas: sobem como bolhas, formam a palavra e se desfazem como gás
+const DOT = (() => {
+  const r = 16, c = document.createElement('canvas'); c.width = c.height = r * 2;
+  const g = c.getContext('2d'), gr = g.createRadialGradient(r, r, 0, r, r, r);
+  gr.addColorStop(0, 'rgba(255,250,235,1)'); gr.addColorStop(.25, 'rgba(255,214,150,.75)');
+  gr.addColorStop(.6, 'rgba(240,160,70,.18)'); gr.addColorStop(1, 'rgba(240,160,70,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, r * 2, r * 2); return c;
+})();
+let particles = [], textLayer = null;
+function buildParticles(text) {
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const g = c.getContext('2d');
+  g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillStyle = '#fff7e8';
+  g.font = `italic 300 ${150 * S}px 'Cormorant Garamond'`; g.letterSpacing = `${6 * S}px`;
+  g.fillText(text, CX, CY);
+  textLayer = c;
+  const data = g.getImageData(0, 0, W, H).data, step = Math.max(2, Math.round(2.4 * S)), R = rng(55);
+  let minX = W, maxX = 0;
+  for (let y = 0; y < H; y += step) for (let x = 0; x < W; x += step) {
+    if (data[(y * W + x) * 4 + 3] > 120) { particles.push({ tx: x, ty: y }); minX = Math.min(minX, x); maxX = Math.max(maxX, x); }
+  }
+  particles.forEach(p => Object.assign(p, {
+    sx: p.tx + (R() - .5) * 520 * S, sy: p.ty + (180 + R() * 520) * S,
+    d: (p.tx - minX) / (maxX - minX + 1) * .65 + R() * .3,
+    sw: (R() - .5) * 2, s: .6 + Math.pow(R(), 2) * 1.4, ph: R() * 6.283,
+    vx: (R() - .5) * 90 * S, vy: -(120 + R() * 260) * S,
+  }));
+}
+function drawMomento(t, a = 15.2, b = 18.6) {
+  if (t < a || t > b + .2 || !particles.length) return;
+  const assembled = eOut(seg(t, a + .9, a + 2.2)), gone = seg(t, b - 1.3, b);
+  // penumbra para a palavra respirar sobre as bolhas
+  const dg = ctx.createRadialGradient(CX, CY, 0, CX, CY, 460 * S);
+  dg.addColorStop(0, `rgba(20,8,2,${.45 * win(t, a, a + .8, b - .6, b)})`); dg.addColorStop(1, 'rgba(20,8,2,0)');
+  ctx.fillStyle = dg; ctx.fillRect(0, 0, W, H);
+  // a palavra nítida surge por baixo das partículas e se dissolve com elas
+  ctx.save(); ctx.globalAlpha = assembled * (1 - eOut(gone)) * .7;
+  ctx.shadowColor = 'rgba(255,190,110,.6)'; ctx.shadowBlur = 18 * S; ctx.drawImage(textLayer, 0, 0); ctx.restore();
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  for (const p of particles) {
+    const k = clamp((t - a - p.d) / 1.35);
+    if (k <= 0) continue;
+    const e = eOut(k);
+    let x = lerp(p.sx, p.tx, e) + Math.sin(k * Math.PI * 2 + p.ph) * (1 - e) * 26 * S * p.sw;
+    let y = lerp(p.sy, p.ty, e);
+    const q = eIn(clamp((t - (b - 1.4) - p.d * .45) / .95));
+    x += p.vx * q + Math.sin(t * 3 + p.ph) * 6 * S * q; y += p.vy * q;
+    const tw = .7 + .3 * Math.sin(t * 9 + p.ph);
+    const al = clamp(k * 3) * (1 - q) * tw * (1 - .55 * e * (1 - q) * assembled);
+    if (al < .02) continue;
+    const r = (2.8 + p.s * 2.6 * (1 - e * .45)) * S;
+    ctx.globalAlpha = al; ctx.drawImage(DOT, x - r, y - r, r * 2, r * 2);
+  }
   ctx.restore();
 }
 
@@ -542,7 +674,7 @@ function render(t) {
   ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over'; ctx.filter = 'none';
   ctx.drawImage(glCanvas, 0, 0);
 
-  word(t, 15.6, 18.4, 'momento', CY);
+  drawMomento(t);
 
   // assinatura: a cena recua para a penumbra e o nome aparece
   if (t > 18.6) {
@@ -572,7 +704,7 @@ window.render = render;
 window.ready = Promise.all([
   document.fonts.load(`500 40px 'Cormorant Garamond'`), document.fonts.load(`italic 300 40px 'Cormorant Garamond'`),
   document.fonts.load(`300 40px 'Jost'`), document.fonts.load(`400 40px 'Jost'`),
-]).then(() => document.fonts.ready).then(() => { paintLabel(); renderer.compile(scene, camera); });
+]).then(() => document.fonts.ready).then(() => { paintLabel(); buildParticles('momento'); renderer.compile(scene, camera); });
 
 if (Q.has('render')) {
   document.body.classList.add('render');

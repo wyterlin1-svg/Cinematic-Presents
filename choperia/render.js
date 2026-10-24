@@ -57,8 +57,20 @@ const frame = (page, t) => page.evaluate(t => window.render(t), t)
   // várias abas renderizam em paralelo; os quadros entram em ordem no ffmpeg
   const N = 4, pages = await Promise.all(Array.from({ length: N }, () => openPage(browser)));
   const started = Date.now();
+  // se uma aba cair (o WebGL por software cansa depois de centenas de quadros), abre outra e refaz o quadro
+  const safeFrame = async (k, t) => {
+    for (let tries = 0; ; tries++) {
+      try { return await frame(pages[k], t); } catch (e) {
+        if (tries >= 3) throw e;
+        console.error(`\naba ${k} caiu em t=${t.toFixed(2)}s (${e.message.split('\n')[0]}); reabrindo`);
+        await pages[k].close().catch(() => {});
+        pages[k] = await openPage(browser);
+      }
+    }
+  };
   for (let i = 0; i < total; i += N) {
-    const batch = await Promise.all(pages.map((p, k) => i + k < total ? frame(p, (i + k) / fps) : null));
+    if (i && i % 120 < N) await Promise.all(pages.map(async (p, k) => { await p.close(); pages[k] = await openPage(browser); }));
+    const batch = await Promise.all(pages.map((p, k) => i + k < total ? safeFrame(k, (i + k) / fps) : null));
     for (const png of batch) if (png && !ff.stdin.write(png)) await new Promise(r => ff.stdin.once('drain', r));
     if (i % (fps * 2) < N) process.stderr.write(`\rquadro ${i}/${total}  ${((Date.now() - started) / 1000).toFixed(0)}s`);
   }
@@ -66,4 +78,4 @@ const frame = (page, t) => page.evaluate(t => window.render(t), t)
   await new Promise(r => ff.on('close', r));
   await browser.close(); server.close();
   console.log(`\npronto: ${out}`);
-})();
+})().catch(e => { console.error('\nfalhou:', e); process.exit(1); });
